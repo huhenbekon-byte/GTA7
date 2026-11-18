@@ -77,7 +77,7 @@ func _ready() -> void:
 	camera = Camera3D.new()
 	camera.fov = 70
 	camera.far = 650
-	camera.near = 0.08
+	camera.near = 0.25
 	spring.add_child(camera)
 	camera.current = true
 	cam_yaw = rotation.y + PI
