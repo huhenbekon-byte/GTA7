@@ -226,27 +226,27 @@ func _setup_model() -> void:
 	var top_y := (_skel.get_bone_global_rest(head_top).origin.y if head_top >= 0 else 17.0)
 	_model_scale = model_height / (top_y * 1.03)
 	model.scale = Vector3.ONE * _model_scale
-	var mis := model.find_children("*", "MeshInstance3D", true, false)
-	# The body mesh is the widest one (T-pose arms). Everything else (clothes, shoes, hair,
-	# eyes) sits millimetres above the skin and z-fights on phone GPUs: push it outward a bit.
-	var body_mi: MeshInstance3D = null
-	for mi in mis:
-		if body_mi == null or (mi as MeshInstance3D).get_aabb().size.x > body_mi.get_aabb().size.x:
-			body_mi = mi
-	for mi in mis:
+	# The model's materials are flagged as alpha-BLEND. Blended surfaces don't write depth,
+	# so on phone GPUs back/inner faces of the shirt, shorts and face show through in patches.
+	# Render them opaque with alpha-scissor (hair/lash cut-outs still work) and depth writes.
+	var fixed := {}
+	for mi in model.find_children("*", "MeshInstance3D", true, false):
 		var m := mi as MeshInstance3D
 		m.extra_cull_margin = 2.0 / _model_scale
-		if m == body_mi or m.mesh == null:
+		if m.mesh == null:
 			continue
-		var small := m.get_aabb().size.length() < 30.0   # eyes / brows
 		for i in m.mesh.get_surface_count():
 			var src := m.get_active_material(i) as BaseMaterial3D
 			if src == null:
 				continue
-			var dup := src.duplicate() as BaseMaterial3D
-			dup.grow = true
-			dup.grow_amount = 0.012 if small else 0.045
-			m.set_surface_override_material(i, dup)
+			if not fixed.has(src):
+				var dup := src.duplicate() as BaseMaterial3D
+				dup.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+				dup.alpha_scissor_threshold = 0.5
+				dup.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
+				dup.cull_mode = BaseMaterial3D.CULL_BACK
+				fixed[src] = dup
+			m.set_surface_override_material(i, fixed[src])
 
 	# arms are authored in T-pose: correction that brings them down along the body
 	var c_l := _arm_correction(_bone(["LeftArm"]), _bone(["LeftHand"]), Vector3(0.12, -1, 0))
