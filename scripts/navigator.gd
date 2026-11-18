@@ -1,7 +1,7 @@
 extends Node
 ## GPS navigator: A* over a baked 4 m grid of the city (assets/ui/navgrid.png:
 ## 0 = blocked, 128 = walkable, 255 = road). Roads are cheaper than sidewalks, so routes
-## follow the streets. Targets the current mission marker, otherwise officer Petrov.
+## follow the streets. Targets whatever the active mission returns from nav_target().
 
 const X0 := -10.0
 const Z0 := -1840.0
@@ -95,10 +95,6 @@ func _pick_target() -> void:
 			target = t[0]
 			target_name = t[1]
 			return
-	var pet = world.get("petrov")
-	if pet != null and is_instance_valid(pet):
-		target = pet
-		target_name = "Офицер Петров"
 
 
 func _process(dt: float) -> void:
