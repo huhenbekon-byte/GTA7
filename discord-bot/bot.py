@@ -345,7 +345,16 @@ def normalize(s: str) -> str:
 
 # ═════════════════════════════════ Настройка сервера ═════════════════════════════════
 
-async def setup_guild(guild: discord.Guild, say):
+def _cache(guild, obj):
+    """Кладёт созданный объект в кэш (нужно при запуске без шлюза, через remote_setup.py)."""
+    if isinstance(obj, discord.Role):
+        guild._add_role(obj)
+    elif obj is not None:
+        guild._add_channel(obj)
+    return obj
+
+
+async def setup_guild(guild: discord.Guild, say, refresh=None, members=None):
     warnings = []
     me = guild.me
     if not me.guild_permissions.administrator:
@@ -360,13 +369,17 @@ async def setup_guild(guild: discord.Guild, say):
         kw = dict(colour=discord.Colour(spec["color"]), hoist=spec["hoist"], permissions=p,
                   mentionable=spec["name"] not in (C.MUTE, C.NEWBIE, C.BOTS))
         if r is None:
-            r = await guild.create_role(name=spec["name"], reason="Настройка СССР РП", **kw)
+            r = _cache(guild, await guild.create_role(name=spec["name"], reason="Настройка СССР РП", **kw))
         elif r < me.top_role and not r.managed:
             if (r.colour.value, r.hoist, r.permissions, r.mentionable) != (spec["color"], spec["hoist"], p, kw["mentionable"]):
                 await r.edit(reason="Настройка СССР РП", **kw)
         else:
             warnings.append(f"Роль «{r.name}» выше роли бота — её права не обновлены.")
         roles[spec["name"]] = r
+    if refresh:
+        await refresh()
+        me = guild.me
+        roles = {s["name"]: role(guild, s["name"]) for s in C.ROLES}
     # порядок: наши роли сразу под ролью бота, в порядке из config
     ordered = [roles[s["name"]] for s in C.ROLES if roles[s["name"]] < me.top_role]
     top = me.top_role.position - 1
@@ -388,7 +401,7 @@ async def setup_guild(guild: discord.Guild, say):
         if not isinstance(category, discord.CategoryChannel):
             category = discord.utils.get(guild.categories, name=cat["name"])
         if category is None:
-            category = await guild.create_category(cat["name"], overwrites=ow, reason="Настройка СССР РП")
+            category = _cache(guild, await guild.create_category(cat["name"], overwrites=ow, reason="Настройка СССР РП"))
         elif category.name != cat["name"] or category.overwrites != ow:
             await category.edit(name=cat["name"], overwrites=ow, reason="Настройка СССР РП")
         store["channels"][cat["key"]] = category.id
@@ -400,13 +413,14 @@ async def setup_guild(guild: discord.Guild, say):
                 obj = discord.utils.get(category.channels, name=ch["name"])
             if ch["type"] == "voice":
                 if obj is None:
-                    obj = await category.create_voice_channel(ch["name"], overwrites=ow, reason="Настройка СССР РП")
+                    obj = _cache(guild, await category.create_voice_channel(ch["name"], overwrites=ow,
+                                                                            reason="Настройка СССР РП"))
                 elif (obj.name, obj.category_id, obj.overwrites) != (ch["name"], category.id, ow):
                     await obj.edit(name=ch["name"], category=category, overwrites=ow)
             else:
                 kw = dict(topic=ch.get("topic", ""), slowmode_delay=ch.get("slowmode", 0), overwrites=ow)
                 if obj is None:
-                    obj = await category.create_text_channel(ch["name"], reason="Настройка СССР РП", **kw)
+                    obj = _cache(guild, await category.create_text_channel(ch["name"], reason="Настройка СССР РП", **kw))
                 elif (obj.name, obj.category_id, obj.overwrites, obj.topic or "", obj.slowmode_delay) != \
                         (ch["name"], category.id, ow, kw["topic"], kw["slowmode_delay"]):
                     await obj.edit(name=ch["name"], category=category, **kw)
@@ -432,7 +446,7 @@ async def setup_guild(guild: discord.Guild, say):
     # 5. Роли участникам
     await say("5/6 Роли участникам, у которых их нет…")
     newbie, bots, citizen = role(guild, C.NEWBIE), role(guild, C.BOTS), role(guild, C.CITIZEN)
-    for m in guild.members:
+    for m in (members if members is not None else guild.members):
         try:
             if m.bot and bots and bots not in m.roles and not m == me:
                 await m.add_roles(bots)
