@@ -17,7 +17,9 @@ import bot as B
 async def main():
     B.load_env()
     token, gid = os.environ["DISCORD_TOKEN"], int(os.environ["GUILD_ID"])
-    client = discord.Client(intents=discord.Intents.none(), proxy=os.environ.get("HTTPS_PROXY"))
+    intents = discord.Intents.none()
+    intents.members = True
+    client = discord.Client(intents=intents, proxy=os.environ.get("HTTPS_PROXY"))
     await client.login(token)
     try:
         guild = await client.fetch_guild(gid)
@@ -33,7 +35,7 @@ async def main():
         await refresh()
         try:
             members = [m async for m in guild.fetch_members(limit=None)]
-        except discord.HTTPException as e:
+        except (discord.HTTPException, discord.ClientException) as e:
             print("Список участников недоступен:", e)
             members = []
 
