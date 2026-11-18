@@ -353,6 +353,8 @@ func _update_sky() -> void:
 	cloud_mat.set_shader_parameter("coverage", lerpf(0.42, 0.85, storm))
 	cloud_mat.set_shader_parameter("tint", Color(1, 1, 1).lerp(Color(1.0, 0.7, 0.5), golden).lerp(Color(0.12, 0.13, 0.18), night).lerp(Color(0.5, 0.52, 0.55), storm * 0.7))
 	Props.bulb_mat().emission_energy_multiplier = night * 4.0
+	for nm in Props.neon_mats:
+		nm.emission_energy_multiplier = 0.4 + night * 3.5
 	Props.bulb_mat().emission = Color(1.0, 0.85, 0.55) if night > 0.05 else Color.BLACK
 
 
@@ -519,6 +521,8 @@ func _build_chunk(k: Vector2i) -> void:
 	_place_parked_cars(root, rng, k, space)
 	_place_street_furniture(root, k, space)
 	_place_loose_props(root, rng, k, space)
+	_place_wall_details(root, rng, k, space)
+	_place_roof_details(root, rng, k, space)
 
 
 # ------------------------------------------------------------------ surfaces
@@ -607,32 +611,20 @@ func _place_street_furniture(root: Node3D, k: Vector2i, space: PhysicsDirectSpac
 			var r := float(hsh % 1000) / 1000.0
 			var kind := ""
 			var inset := 0.75
-			if r < 0.30:
-				kind = "lamp"
-				inset = 0.55
-			elif r < 0.48:
-				kind = "tree"
-				inset = 1.3
-			elif r < 0.58:
-				kind = "bench"
-				inset = 1.2
-			elif r < 0.70:
-				kind = "trash"
-			elif r < 0.78:
-				kind = "hydrant"
-				inset = 0.5
-			elif r < 0.83:
-				kind = "mailbox"
-			elif r < 0.86:
-				kind = "booth"
-				inset = 1.0
-			elif r < 0.90:
-				kind = "busstop"
-				inset = 1.4
-			elif r < 0.93:
-				kind = "traffic"
-				inset = 0.5
-			else:
+			var table := [
+				["lamp", 0.24, 0.55], ["tree", 0.14, 1.3], ["bench", 0.07, 1.2], ["trash", 0.07, 0.75],
+				["hydrant", 0.05, 0.5], ["planter", 0.07, 1.2], ["bike_rack", 0.05, 1.3], ["meter", 0.05, 0.45],
+				["sign", 0.06, 0.4], ["bollards", 0.04, 0.4], ["mailbox", 0.03, 0.8], ["booth", 0.02, 1.0],
+				["busstop", 0.03, 1.4], ["kiosk", 0.02, 1.8], ["traffic", 0.03, 0.5],
+			]
+			var acc := 0.0
+			for t in table:
+				acc += t[1]
+				if r < acc:
+					kind = t[0]
+					inset = t[2]
+					break
+			if kind == "":
 				used[slot] = true
 				continue
 			var spot := curb - n * inset
@@ -669,7 +661,8 @@ func rng_for(key) -> RandomNumberGenerator:
 ## Loose physics clutter (crates, barrels, pallets, bins, cones...) against walls in yards
 ## and alleys, never on the road.
 func _place_loose_props(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, space: PhysicsDirectSpaceState3D) -> void:
-	var kinds := ["crate", "crate", "barrel", "barrel", "pallets", "trash", "cone", "barrier", "dumpster", "ball"]
+	var kinds := ["crate", "crate", "barrel", "barrel", "pallets", "trash", "cone", "barrier", "dumpster", "ball",
+		"container", "tires", "spool", "sandbags", "fence", "pipes", "scaffold", "trashbags", "trashbags", "generator"]
 	var placed := 0
 	for attempt in 16:
 		if placed >= 5:
@@ -701,7 +694,10 @@ func _place_loose_props(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, s
 		var fp: Array = Props.KINDS[kind]
 		var spot := Vector3(wall_p.x, y0, wall_p.z) + Vector3(wall_n.x, 0, wall_n.z).normalized() * (float(fp[1]) + 0.12)
 		var yaw := atan2(wall_n.x, wall_n.z)
-		var count := 1 if kind in ["dumpster", "barrier", "ball", "cone"] else rng.randi_range(1, 3)
+		var count := rng.randi_range(1, 3) if kind in ["crate", "barrel", "pallets", "tires", "trashbags", "fence"] else 1
+		if kind == "container":
+			# containers stand side-on along the wall
+			yaw += PI * 0.5
 		var along := Vector3(-wall_n.z, 0, wall_n.x).normalized()
 		for c in count:
 			var sp := spot + along * (c * (float(fp[0]) * 2.0 + 0.1))
@@ -1068,3 +1064,109 @@ func make_drivable(car: Node3D) -> VehicleBody3D:
 			_vehicles.erase(far)
 			far.queue_free()
 	return v
+
+
+# ------------------------------------------------------------------ facade & roof details
+## Adds volume to flat facades: AC units, drainpipes, awnings with shop fronts, neon signs,
+## balconies, fire escapes and wall lamps, mounted on real walls found by raycasts.
+func _place_wall_details(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, space: PhysicsDirectSpaceState3D) -> void:
+	var used := {}
+	var placed := 0
+	for attempt in 30:
+		if placed >= 12:
+			break
+		var p := Vector3(k.x * CHUNK + rng.randf() * CHUNK, 0, k.y * CHUNK + rng.randf() * CHUNK)
+		var h := _ground(space, p, 6.0, -3.0)
+		if h.is_empty() or h.normal.y < 0.9:
+			continue
+		var g: Vector3 = h.position
+		var a := rng.randf() * TAU
+		var d := Vector3(cos(a), 0, sin(a))
+		var from := g + Vector3.UP * 1.2
+		var wh := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, from + d * 10.0, 1))
+		if wh.is_empty() or absf(wh.normal.y) > 0.15:
+			continue
+		var wn: Vector3 = wh.normal
+		wn.y = 0.0
+		wn = wn.normalized()
+		var wp: Vector3 = wh.position
+		var base_y := g.y
+		# how tall is this wall? probe upwards
+		var wall_h := 0.0
+		for ty in [3.0, 5.0, 7.0, 9.0, 12.0]:
+			var pf: Vector3 = wp + wn * 1.0 + Vector3.UP * (ty - 1.2)
+			var th := space.intersect_ray(PhysicsRayQueryParameters3D.create(pf, pf - wn * 1.6, 1))
+			if th.is_empty() or absf(th.normal.y) > 0.2 or Vector3(th.normal.x, 0, th.normal.z).normalized().dot(wn) < 0.95:
+				break
+			wall_h = ty
+		if wall_h < 3.0:
+			continue
+		var r := rng.randf()
+		var kind := ""
+		var mount_y := 0.0
+		if r < 0.22:
+			kind = "ac"
+			mount_y = rng.randf_range(2.8, minf(wall_h, 7.0) - 0.5)
+		elif r < 0.38:
+			kind = "drainpipe"
+			mount_y = 0.0
+		elif r < 0.55:
+			kind = "awning"
+			mount_y = 2.85
+		elif r < 0.68:
+			kind = "shop_sign"
+			mount_y = 3.6
+		elif r < 0.8 and wall_h >= 5.0:
+			kind = "balcony"
+			mount_y = 3.6 if wall_h < 7.0 else rng.randf_range(3.6, 6.6)
+		elif r < 0.88 and wall_h >= 7.0:
+			kind = "fire_escape"
+			mount_y = 0.0
+		else:
+			kind = "wall_lamp"
+			mount_y = 2.6
+		var slot := Vector3i(roundi(wp.x / 3.0), roundi(mount_y / 3.0), roundi(wp.z / 3.0))
+		if used.has(slot) or _wall_slots.has(slot):
+			continue
+		# awnings / shop fronts only on walls next to a sidewalk
+		if kind in ["awning", "shop_sign"] and is_road_hit(_ground(space, wp + wn * 1.0, base_y + 1.5, base_y - 1.5)):
+			continue
+		used[slot] = true
+		_wall_slots[slot] = true
+		var node := Props.wall_detail(kind, rng, wall_h)
+		root.add_child(node)
+		var yaw := atan2(wn.x, wn.z)
+		node.global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(wp.x, base_y + mount_y, wp.z) + wn * 0.02)
+		node.tree_exited.connect(func(): _wall_slots.erase(slot))
+		placed += 1
+
+
+var _wall_slots := {}
+
+
+## Rooftop clutter for a livelier skyline: water towers, AC units, antennas, dishes, vents.
+func _place_roof_details(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, space: PhysicsDirectSpaceState3D) -> void:
+	var placed := 0
+	for attempt in 10:
+		if placed >= 4:
+			break
+		var p := Vector3(k.x * CHUNK + rng.randf() * CHUNK, 0, k.y * CHUNK + rng.randf() * CHUNK)
+		var h := _ground(space, p, 120.0, 5.0)
+		if h.is_empty() or h.normal.y < 0.97 or h.position.y < 6.0:
+			continue
+		var y: float = h.position.y
+		var flat := true
+		for o in [Vector3(2.5, 0, 0), Vector3(-2.5, 0, 0), Vector3(0, 0, 2.5), Vector3(0, 0, -2.5)]:
+			var hh := _ground(space, p + o, y + 3.0, y - 3.0)
+			if hh.is_empty() or absf(hh.position.y - y) > 0.3:
+				flat = false
+				break
+		if not flat:
+			continue
+		var r := rng.randf()
+		var kind := "roof_ac" if r < 0.35 else ("vents" if r < 0.55 else ("antenna" if r < 0.7 else ("dish" if r < 0.85 else "water_tower")))
+		var node := Props.roof_detail(kind, rng)
+		root.add_child(node)
+		node.global_position = Vector3(p.x, y, p.z)
+		node.rotation.y = rng.randf() * TAU
+		placed += 1
