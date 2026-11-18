@@ -36,6 +36,7 @@ func _init():
 	for i in 30: await physics_frame
 	await _shot("06_front")
 	print("npcs ", main._npcs.size(), " chunks ", main._chunks.size(), " props ", main.get_tree().get_nodes_in_group("lamp_light").size(), " lamps")
+	print("parked cars ", main.get_tree().get_nodes_in_group("parked_car").size())
 	print("fps ", Engine.get_frames_per_second())
 	quit()
 

@@ -10,6 +10,31 @@ const L_PROPS := 2
 static var _mats := {}
 static var _meshes := {}
 static var _bulb: StandardMaterial3D
+static var _car_templates: Array[Node3D] = []
+
+
+## Car models from assets/cars/cars.glb (split into Car_N nodes by cars_import.gd).
+static func random_car(rng: RandomNumberGenerator) -> Node3D:
+	if _car_templates.is_empty():
+		var lib: Node = (load("res://assets/cars/cars.glb") as PackedScene).instantiate()
+		for c in lib.get_children():
+			var sz: Vector3 = c.get_meta("size", Vector3.ZERO)
+			# keep normal-sized vehicles for street parking; big trucks are rarer
+			if sz.z <= 5.6 or rng.randf() < 0.3:
+				lib.remove_child(c)
+				_car_templates.append(c)
+		lib.free()
+	return _car_templates[rng.randi() % _car_templates.size()]
+
+
+static func car_from(tmpl: Node3D, size: Vector3) -> Node3D:
+	var b := _static()
+	var vis := tmpl.duplicate()
+	b.add_to_group("parked_car")
+	b.add_child(vis)
+	col_box(b, Vector3(size.x * 0.96, size.y * 0.55, size.z * 0.98), Vector3(0, size.y * 0.3, 0))
+	col_box(b, Vector3(size.x * 0.85, size.y * 0.45, size.z * 0.7), Vector3(0, size.y * 0.75, 0))
+	return b
 
 
 ## Shared street-lamp bulb material; main.gd drives its emission with the day/night cycle.

@@ -55,7 +55,7 @@ var _brown2 := 0.0
 var _ready_done := false
 
 const PROP_WEIGHTS := {
-	"lamp": 10, "tree": 7, "bench": 5, "hydrant": 5, "car": 10, "booth": 2, "dumpster": 3, "busstop": 2,
+	"lamp": 10, "tree": 7, "bench": 5, "hydrant": 5, "booth": 2, "dumpster": 3, "busstop": 2,
 	"mailbox": 3, "traffic": 2, "cone": 8, "crate": 6, "barrel": 5, "trash": 7, "barrier": 4, "pallets": 3, "ball": 1,
 }
 
@@ -499,6 +499,7 @@ func _build_chunk(k: Vector2i) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(k)
 	var space := get_world_3d().direct_space_state
+	_place_parked_cars(root, rng, k, space)
 	var total_w := 0
 	for v in PROP_WEIGHTS.values():
 		total_w += v
@@ -554,3 +555,115 @@ func _manage_npcs() -> void:
 		add_child(npc)
 		npc.global_position = hit.position + Vector3(0, 0.1, 0)
 		_npcs.append(npc)
+
+
+# ------------------------------------------------------------------ parked cars
+const CAR_ROW_CHANCE := 0.8
+
+func _ground_h(space: PhysicsDirectSpaceState3D, p: Vector3, y0: float) -> float:
+	var q := PhysicsRayQueryParameters3D.create(Vector3(p.x, y0 + 2.2, p.z), Vector3(p.x, y0 - 1.5, p.z), 1)
+	var h := space.intersect_ray(q)
+	if h.is_empty():
+		return NAN
+	return h.position.y
+
+
+## Walks from p along dir until the ground changes. Returns [distance, kind]:
+## kind 2 = curb (ground steps up), 1 = wall, -1 = drop / hole, 0 = nothing within maxd.
+func _edge_dist(space: PhysicsDirectSpaceState3D, p: Vector3, dir: Vector3, y0: float, maxd: float) -> Array:
+	var from := Vector3(p.x, y0 + 0.7, p.z)
+	var wq := PhysicsRayQueryParameters3D.create(from, from + dir * maxd, 1)
+	var wall := space.intersect_ray(wq)
+	var wd := maxd + 1.0
+	if not wall.is_empty():
+		wd = Vector2(wall.position.x - p.x, wall.position.z - p.z).length()
+	var d := 0.3
+	while d < minf(wd, maxd):
+		var h := _ground_h(space, p + dir * d, y0)
+		if is_nan(h) or h < y0 - 0.12:
+			return [d, -1]
+		if h > y0 + 0.06:
+			return [d, 2]
+		d += 0.3
+	if wd <= maxd:
+		return [wd, 1]
+	return [maxd + 1.0, 0]
+
+
+func _place_parked_cars(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, space: PhysicsDirectSpaceState3D) -> void:
+	if rng.randf() > CAR_ROW_CHANCE:
+		return
+	for attempt in 5:
+		var p := Vector3(k.x * CHUNK + rng.randf() * CHUNK, 0, k.y * CHUNK + rng.randf() * CHUNK)
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(p.x, 7.0, p.z), Vector3(p.x, -3.0, p.z), 1))
+		if hit.is_empty() or hit.normal.y < 0.97:
+			continue
+		var start: Vector3 = hit.position
+		var y0 := start.y
+		# nearest curb around the point
+		var best_d := 99.0
+		var best_dir := Vector3.ZERO
+		for i in 16:
+			var a := i * TAU / 16.0
+			var dir := Vector3(cos(a), 0, sin(a))
+			var r := _edge_dist(space, start, dir, y0, 5.0)
+			if r[1] == 2 and r[0] < best_d:
+				best_d = r[0]
+				best_dir = dir
+		if best_d > 5.0:
+			continue
+		# refine the curb line from two samples along it
+		var axis := Vector3(-best_dir.z, 0, best_dir.x)
+		var e1 := _edge_dist(space, start + axis * 2.5, best_dir, y0, 7.0)
+		var e2 := _edge_dist(space, start - axis * 2.5, best_dir, y0, 7.0)
+		if e1[1] != 2 or e2[1] != 2 or absf(e1[0] - e2[0]) > 1.2:
+			continue
+		var c1: Vector3 = start + axis * 2.5 + best_dir * float(e1[0])
+		var c2: Vector3 = start - axis * 2.5 + best_dir * float(e2[0])
+		axis = (c1 - c2)
+		axis.y = 0.0
+		axis = axis.normalized()
+		var n := Vector3(axis.z, 0, -axis.x)
+		if n.dot(best_dir) < 0.0:
+			n = -n
+		var curb := _edge_dist(space, start, n, y0, 7.0)
+		if curb[1] != 2:
+			continue
+		var curb_d: float = curb[0]
+		var facing := 0.0 if rng.randf() < 0.5 else PI
+		var count := rng.randi_range(1, 4)
+		var offset := 0.0
+		var placed := 0
+		for c in count * 2:
+			if placed >= count:
+				break
+			var tmpl := Props.random_car(rng)
+			var size: Vector3 = tmpl.get_meta("size")
+			var center_off := offset + size.z * 0.5
+			offset += size.z + rng.randf_range(0.8, 2.0)
+			var pos := start + n * (curb_d - size.x * 0.5 - 0.3) + axis * center_off
+			if _try_put_car(space, root, tmpl, size, pos, axis, facing, y0):
+				placed += 1
+		if placed > 0:
+			return
+
+
+func _try_put_car(space: PhysicsDirectSpaceState3D, root: Node3D, tmpl: Node3D, size: Vector3, pos: Vector3, axis: Vector3, facing: float, y0: float) -> bool:
+	if Vector2(pos.x - player.global_position.x, pos.z - player.global_position.z).length() < 4.0:
+		return false
+	var yaw := atan2(axis.x, axis.z) + facing
+	var cb := Basis(Vector3.UP, yaw)
+	# all four corners and the middle must be on flat road
+	for cx in [-0.5, 0.5]:
+		for cz in [-0.5, 0.0, 0.5]:
+			var cp := pos + cb * Vector3(cx * size.x, 0, cz * size.z)
+			var h := _ground_h(space, cp, y0)
+			if is_nan(h) or absf(h - y0) > 0.08:
+				return false
+	if not _clear(Vector3(pos.x, y0, pos.z), Vector3(size.x * 0.5, size.y * 0.5 - 0.15, size.z * 0.5), yaw):
+		return false
+	var car := Props.car_from(tmpl, size)
+	root.add_child(car)
+	car.global_position = Vector3(pos.x, y0 + 0.01, pos.z)
+	car.rotation.y = yaw
+	return true
