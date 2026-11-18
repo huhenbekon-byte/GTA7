@@ -164,7 +164,11 @@ func blocks_vehicle() -> bool:
 
 
 # ------------------------------------------------------------------ actors
-func _spawn_npc(pos: Vector3, clothes: Color, label: String, skin := Color(0, 0, 0, 0)) -> CharacterBody3D:
+const POLICE_MODEL := "res://assets/characters/police_src.glb"
+const THUG_MODEL := "res://assets/characters/thug.glb"
+
+
+func _spawn_npc(pos: Vector3, clothes: Color, label: String, skin := Color(0, 0, 0, 0), model := "") -> CharacterBody3D:
 	var n := CharacterBody3D.new()
 	n.set_script(NpcScript)
 	n.set("world", world)
@@ -173,6 +177,7 @@ func _spawn_npc(pos: Vector3, clothes: Color, label: String, skin := Color(0, 0,
 	n.set("no_react", true)
 	n.set("preset_clothes", clothes)
 	n.set("preset_skin", skin)
+	n.set("model_override", model)
 	n.set("label", label)
 	world.add_child(n)
 	n.global_position = pos + Vector3.UP * 0.05
@@ -205,7 +210,7 @@ func _setup_actors() -> void:
 	var off_pos = world.find_spot(car_pos, 7.0, false)
 	if off_pos == null:
 		off_pos = car_pos + Vector3(2.5, 0, 0)
-	officer = _spawn_npc(off_pos, Color(0.45, 0.55, 1.0), "Петров", Color(0.95, 0.88, 0.82))
+	officer = _spawn_npc(off_pos, Color.WHITE, "Петров", Color.WHITE, POLICE_MODEL)
 	# hooligan ~110 m away on a sidewalk, roughly opposite side from the police
 	var away: Vector3 = (base - car_pos)
 	away.y = 0.0
@@ -220,7 +225,7 @@ func _setup_actors() -> void:
 		h_pos = world.find_spot(base, 90.0, false)
 	if h_pos == null:
 		h_pos = base + away * 60.0
-	hooligan = _spawn_npc(h_pos, Color(1.0, 0.45, 0.35), "Хулиган")
+	hooligan = _spawn_npc(h_pos, Color.WHITE, "Хулиган", Color.WHITE, THUG_MODEL)
 	hooligan.add_to_group("aim_priority")
 	hooligan.set("no_react", true)
 	await _frame()

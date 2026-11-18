@@ -8,7 +8,7 @@ func _init():
 	var states = [["idle",0.0,true,0.0,""],["walk",1.8,true,0.0,""],["jog",4.6,true,0.0,""],["sprint",7.6,true,0.0,""],["jump",3.0,false,4.0,""],["fall",3.0,false,-8.0,"fall"],["jab",0.0,true,0.0,"a1"],["kick",0.0,true,0.0,"a3"],["knock",0.0,true,0.0,"down"]]
 	var hs = []
 	for i in states.size():
-		var h = Humanoid.new(); h.model_path = "res://assets/character/character.glb"; root.add_child(h)
+		var h = Humanoid.new(); h.model_path = OS.get_cmdline_user_args()[1] if OS.get_cmdline_user_args().size() > 1 else "res://assets/character/character.glb"; root.add_child(h)
 		h.position = Vector3((i - 4) * 1.15, 0, 0)
 		h.rotation.y = 0.9
 		hs.append(h)

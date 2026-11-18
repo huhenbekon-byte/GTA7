@@ -25,6 +25,8 @@ var script_face = null         # Vector3 to face when standing
 var preset_clothes := Color(0, 0, 0, 0)
 var preset_skin := Color(0, 0, 0, 0)
 var label := ""                # shown above the head (mission actors)
+var model_override := ""       # use another rigged model instead of the default
+var force_personality := -1
 
 var _dir := Vector3.FORWARD
 var _speed := 1.3
@@ -59,13 +61,15 @@ func _ready() -> void:
 	add_child(_shape)
 
 	body = Humanoid.new()
-	body.model_path = MODEL
+	body.model_path = model_override if model_override != "" else MODEL
 	body.tint_clothes = preset_clothes if preset_clothes.a > 0.0 else CLOTHES[_rng.randi() % CLOTHES.size()]
 	body.tint_skin = preset_skin if preset_skin.a > 0.0 else SKINS[_rng.randi() % SKINS.size()]
 	body.model_height = _rng.randf_range(1.66, 1.92)
 	add_child(body)
 	var r := _rng.randf()
 	personality = 2 if r < 0.22 else (1 if r < 0.45 else 0)
+	if force_personality >= 0:
+		personality = force_personality
 	_level = global_position.y
 	_start_walk()
 

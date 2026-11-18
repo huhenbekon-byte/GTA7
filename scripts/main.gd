@@ -755,6 +755,19 @@ func _manage_npcs() -> void:
 		var npc := CharacterBody3D.new()
 		npc.set_script(NpcScript)
 		npc.set("world", self)
+		var kind := _rng.randf()
+		if kind < 0.08:
+			# off-duty cop walking the beat
+			npc.set("model_override", "res://assets/characters/police_src.glb")
+			npc.set("preset_clothes", Color.WHITE)
+			npc.set("preset_skin", Color.WHITE)
+			npc.set("force_personality", 2)
+		elif kind < 0.16:
+			# masked tough guy — fights back
+			npc.set("model_override", "res://assets/characters/thug.glb")
+			npc.set("preset_clothes", Color.WHITE)
+			npc.set("preset_skin", Color.WHITE)
+			npc.set("force_personality", 2)
 		add_child(npc)
 		npc.global_position = hit.position + Vector3(0, 0.1, 0)
 		_npcs.append(npc)

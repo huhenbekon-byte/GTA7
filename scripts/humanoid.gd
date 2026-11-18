@@ -73,6 +73,7 @@ var _hips_bone := -1
 var _hips_rest_pos := Vector3.ZERO
 var _model_scale := 1.0
 var _fist := 0.0
+var _skel_rel_xf := Transform3D.IDENTITY
 var _down_sign := 1.0
 var _pose_blend := 0.0
 var ragdoll: Ragdoll
@@ -215,13 +216,52 @@ func _build() -> void:
 
 
 # --- rigged model support ----------------------------------------------------------
+## Alternative bone names for non-Mixamo rigs (e.g. the thug model).
+const BONE_ALIASES := {
+	"Hips": ["hip"], "Spine": ["spine"], "Spine1": ["spine"], "Spine2": ["chest"], "Neck": ["neck"],
+	"Head": ["head"], "HeadTop_End": ["top"],
+	"LeftShoulder": ["L_shoulder"], "LeftArm": ["L_arm"], "LeftForeArm": ["L_elbow"], "LeftHand": ["L_wrist"],
+	"RightShoulder": ["R_shoulder"], "RightArm": ["R_arm"], "RightForeArm": ["R_elbow"], "RightHand": ["R_wrist"],
+	"LeftUpLeg": ["L_leg"], "LeftLeg": ["L_knee"], "LeftFoot": ["L_ankle"],
+	"RightUpLeg": ["R_leg"], "RightLeg": ["R_knee"], "RightFoot": ["R_ankle"],
+}
+
+
 func _bone(names: Array) -> int:
+	var all := []
+	for n in names:
+		all.append(n)
+		if BONE_ALIASES.has(n):
+			all.append_array(BONE_ALIASES[n])
+		# fingers: LeftHandIndex1 -> L_point1 etc.
+		for side in [["Left", "L_"], ["Right", "R_"]]:
+			for f in [["Index", "point"], ["Middle", "middle"], ["Ring", "ring"], ["Pinky", "pink"]]:
+				var pre: String = side[0] + "Hand" + f[0]
+				if String(n).begins_with(pre):
+					all.append(side[1] + f[1] + String(n).substr(pre.length()))
 	for i in _skel.get_bone_count():
 		var bn := _skel.get_bone_name(i)
-		for n in names:
+		for n in all:
 			if bn.begins_with("mixamorig_" + n + "_") or bn == "mixamorig_" + n or bn == "mixamorig:" + n or bn == n:
 				return i
+			if bn.begins_with(n + "_") and bn.substr(n.length() + 1).is_valid_int():
+				return i
 	return -1
+
+
+## Transform from skeleton space to the model root's space.
+func _skel_rel(model: Node3D) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var n: Node = _skel
+	while n != null and n != model:
+		if n is Node3D:
+			t = (n as Node3D).transform * t
+		n = n.get_parent()
+	return t
+
+
+func _rest_model(b: int) -> Transform3D:
+	return _skel_rel_xf * _skel.get_bone_global_rest(b)
 
 
 func _setup_model() -> void:
@@ -232,8 +272,12 @@ func _setup_model() -> void:
 		push_warning("model has no skeleton")
 		return
 	_skel = sks[0]
+	for ap in model.find_children("*", "AnimationPlayer", true, false):
+		(ap as AnimationPlayer).stop()
+		ap.queue_free()
+	_skel_rel_xf = _skel_rel(model)
 	var head_top := _bone(["HeadTop_End"])
-	var top_y := (_skel.get_bone_global_rest(head_top).origin.y if head_top >= 0 else 17.0)
+	var top_y := (_rest_model(head_top).origin.y if head_top >= 0 else 17.0)
 	_model_scale = model_height / (top_y * 1.03)
 	model.scale = Vector3.ONE * _model_scale
 	# The model's materials are flagged as alpha-BLEND. Blended surfaces don't write depth,
@@ -276,7 +320,7 @@ func _setup_model() -> void:
 		var b := _bone(sp[0])
 		if b < 0:
 			continue
-		var gq := _skel.get_bone_global_rest(b).basis.get_rotation_quaternion()
+		var gq := _rest_model(b).basis.get_rotation_quaternion()
 		_bone_map.append([b, sp[1], sp[2], sp[3], _skel.get_bone_rest(b).basis.get_rotation_quaternion(), gq, gq.inverse()])
 	# fingers: curled procedurally (relaxed hand / fist)
 	for side in [["Left", c_l, -1.0], ["Right", c_r, 1.0]]:
@@ -285,7 +329,7 @@ func _setup_model() -> void:
 				var fb := _bone([side[0] + "Hand" + f + str(j)])
 				if fb < 0:
 					continue
-				var fq := _skel.get_bone_global_rest(fb).basis.get_rotation_quaternion()
+				var fq := _rest_model(fb).basis.get_rotation_quaternion()
 				var cq: Quaternion = side[1]
 				_bone_map.append([fb, null, cq.inverse(), cq, _skel.get_bone_rest(fb).basis.get_rotation_quaternion(), fq, fq.inverse(), side[2]])
 	_hips_bone = _bone(["Hips"])
@@ -295,7 +339,7 @@ func _setup_model() -> void:
 func _arm_correction(arm: int, hand: int, want: Vector3) -> Quaternion:
 	if arm < 0 or hand < 0:
 		return Quaternion.IDENTITY
-	var d := _skel.get_bone_global_rest(hand).origin - _skel.get_bone_global_rest(arm).origin
+	var d := _rest_model(hand).origin - _rest_model(arm).origin
 	return Quaternion(d.normalized(), want.normalized())
 
 
@@ -311,6 +355,7 @@ func _apply_skeleton() -> void:
 		_skel.set_bone_pose_rotation(m[0], pose.normalized())
 	if _hips_bone >= 0:
 		var off := (hips.position - Vector3(0, HIP_H, 0)) / _model_scale
+		off = _skel_rel_xf.basis.inverse() * off
 		var parent := _skel.get_bone_parent(_hips_bone)
 		if parent >= 0:
 			off = _skel.get_bone_global_rest(parent).basis.inverse() * off

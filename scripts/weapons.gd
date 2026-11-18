@@ -3,7 +3,23 @@ class_name Weapons
 ## Weapon models (built from primitives, baked) and shot effects: muzzle flash,
 ## tracer, impact sparks / dust. Generic designs, no real-world brand.
 
+static func _pack_weapon(res: String, scale: float, offset: Vector3, muzzle: Vector3) -> Node3D:
+	var n := Node3D.new()
+	var mi := MeshInstance3D.new()
+	mi.mesh = load(res)
+	mi.transform = Transform3D(Basis(Vector3.UP, PI).scaled(Vector3.ONE * scale), offset)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	n.add_child(mi)
+	var mk := Marker3D.new()
+	mk.name = "Muzzle"
+	mk.position = muzzle
+	n.add_child(mk)
+	return n
+
+
 static func rifle() -> Node3D:
+	if ResourceLoader.exists("res://assets/weapons/rifle.res"):
+		return _pack_weapon("res://assets/weapons/rifle.res", 0.4, Vector3(0, -0.02, 0.12), Vector3(0, 0.0, 0.64))
 	var n := Node3D.new()
 	var metal := Props.tm(Color(0.12, 0.12, 0.13), "metal", 0.4, 0.7, 6.0)
 	var poly := Props.m(Color(0.16, 0.15, 0.13), 0.7)
@@ -26,6 +42,8 @@ static func rifle() -> Node3D:
 
 
 static func pistol() -> Node3D:
+	if ResourceLoader.exists("res://assets/weapons/pistol.res"):
+		return _pack_weapon("res://assets/weapons/pistol.res", 0.3, Vector3(0, -0.03, 0.0), Vector3(0, 0.03, 0.16))
 	var n := Node3D.new()
 	var metal := Props.m(Color(0.1, 0.1, 0.11), 0.4, 0.7)
 	Props.vis(n, Props.box(0.03, 0.035, 0.17), metal, Vector3(0, 0.02, 0.04), Vector3.ZERO, false)

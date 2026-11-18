@@ -42,3 +42,6 @@ godot --headless --export-release "Android" build/GTA7.apk
 Модель города: "City" by golukumar (Sketchfab, Sketchfab Standard license).
 Машины: "Orchids Simulator Traffic Car Pack" by Oren garage (Sketchfab, CC-BY-4.0).
 Модель персонажа: "Charter T-Pose" by Yury Misiyuk (Sketchfab, CC-BY-4.0).
+Хулиган / «крепкие парни»: "terrorist" by DJMaesen (Sketchfab, CC-BY-4.0).
+Офицер Петров / полицейские: "Realistic Male Police Officer" by Realistic 3d (Sketchfab, CC-BY-4.0) — автоматически зариган при импорте (`assets/characters/autorig_import.gd`).
+Оружие: "Low poly Colored Liberator gun pack" by blaze71643 (Sketchfab, CC-BY-4.0); из пака вынесены автомат и пистолет (`tools/extract_weapons.gd` → `assets/weapons/*.res`), сам пак в APK не входит.
