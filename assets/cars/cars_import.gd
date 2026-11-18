@@ -73,34 +73,74 @@ func _post_import(scene: Node) -> Object:
 		var to_local := Transform3D(Basis(), -Vector3(center.x, box.position.y, center.z))
 		if along_x:
 			to_local = Transform3D(Basis(Vector3.UP, PI / 2), Vector3.ZERO) * to_local
-		var tools := {}
+		# split wheel-like surfaces (so they can spin / steer) from the body
+		var body_surfs := []
+		var wheel_corners := {}
 		for i in ids:
-			for s in parts[i][1]:
-				var mat: Material = s[3]
-				var mk := str(mat.get_instance_id()) if mat else "none"
-				if not tools.has(mk):
-					tools[mk] = [SurfaceTool.new(), mat]
-				(tools[mk][0] as SurfaceTool).append_from(s[0], s[1], to_local * (s[2] as Transform3D))
+			for sf in parts[i][1]:
+				var xf: Transform3D = to_local * (sf[2] as Transform3D)
+				var a: AABB = xf * (sf[0] as Mesh).get_aabb()
+				var c := a.get_center()
+				var is_wheel := a.size.x < 0.5 and absf(a.size.y - a.size.z) < 0.15 and a.size.y > 0.4 and a.size.y < 1.25 and c.y < 0.75 and absf(c.x) > 0.35
+				if is_wheel:
+					var wk := ("R" if c.x < 0.0 else "L") + ("F" if c.z > 0.0 else "B")
+					if not wheel_corners.has(wk):
+						wheel_corners[wk] = []
+					wheel_corners[wk].append([sf, xf, a])
+				else:
+					body_surfs.append([sf, xf])
+		if wheel_corners.size() != 4:
+			for wk in wheel_corners:
+				for w in wheel_corners[wk]:
+					body_surfs.append([w[0], w[1]])
+			wheel_corners = {}
 		var car := Node3D.new()
 		car.name = "Car_%d" % idx
 		car.set_meta("size", Vector3(wid, box.size.y, len))
 		out.add_child(car)
 		car.owner = out
-		for mk in tools:
-			var mesh: ArrayMesh = (tools[mk][0] as SurfaceTool).commit()
-			if tools[mk][1]:
-				var m: Material = tools[mk][1]
-				if m is BaseMaterial3D:
-					(m as BaseMaterial3D).cull_mode = BaseMaterial3D.CULL_DISABLED
-				mesh.surface_set_material(0, m)
-			var mi := MeshInstance3D.new()
-			mi.mesh = mesh
-			mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
-			car.add_child(mi)
-			mi.owner = out
+		_build_meshes(car, out, body_surfs, Vector3.ZERO)
+		for wk in wheel_corners:
+			var wa: AABB = wheel_corners[wk][0][2]
+			for w in wheel_corners[wk]:
+				wa = wa.merge(w[2])
+			var wc := wa.get_center()
+			var wn := Node3D.new()
+			wn.name = "Wheel_" + wk
+			wn.position = wc
+			wn.set_meta("radius", maxf(wa.size.y, wa.size.z) * 0.5)
+			car.add_child(wn)
+			wn.owner = out
+			var ws := []
+			for w in wheel_corners[wk]:
+				ws.append([w[0], w[1]])
+			_build_meshes(wn, out, ws, wc)
 		idx += 1
 	scene.free()
 	return out
+
+
+func _build_meshes(parent: Node3D, owner_node: Node, surfs: Array, origin: Vector3) -> void:
+	var tools := {}
+	for e in surfs:
+		var sf: Array = e[0]
+		var mat: Material = sf[3]
+		var mk := str(mat.get_instance_id()) if mat else "none"
+		if not tools.has(mk):
+			tools[mk] = [SurfaceTool.new(), mat]
+		(tools[mk][0] as SurfaceTool).append_from(sf[0], sf[1], Transform3D(Basis(), -origin) * (e[1] as Transform3D))
+	for mk in tools:
+		var mesh: ArrayMesh = (tools[mk][0] as SurfaceTool).commit()
+		if tools[mk][1]:
+			var m: Material = tools[mk][1]
+			if m is BaseMaterial3D:
+				(m as BaseMaterial3D).cull_mode = BaseMaterial3D.CULL_DISABLED
+			mesh.surface_set_material(0, m)
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		parent.add_child(mi)
+		mi.owner = owner_node
 
 
 func _find(p: Array, i: int) -> int:

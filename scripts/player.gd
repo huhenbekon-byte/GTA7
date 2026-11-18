@@ -20,6 +20,8 @@ var sprint_held := false
 var jump_pressed := false
 var attack_pressed := false
 var grab_pressed := false
+var jump_held := false
+var vehicle: VehicleBody3D = null
 var world: Node
 var held: RigidBody3D
 var _held_layer := 0
@@ -103,6 +105,9 @@ func _physics_process(dt: float) -> void:
 	if body.is_ragdoll():
 		_update_ragdoll()
 		return
+	if vehicle:
+		_drive(dt)
+		return
 	# --- input (keyboard fallback for desktop) ---
 	var kb := Vector2(
 		Input.get_action_strength("ui_right") - Input.get_action_strength("ui_left"),
@@ -177,6 +182,12 @@ func _physics_process(dt: float) -> void:
 		if held:
 			_throw()
 		elif not knocked:
+			var car: Node3D = world.nearest_car(global_position) if world else null
+			if car:
+				_enter_vehicle(car)
+				_e_down = e
+				grab_pressed = false
+				return
 			_try_grab()
 	_e_down = e
 	grab_pressed = false
@@ -246,6 +257,9 @@ func _physics_process(dt: float) -> void:
 
 
 func _process(dt: float) -> void:
+	if vehicle:
+		_vehicle_camera(dt)
+		return
 	# camera follow
 	var target := global_position + Vector3(0, 1.55, 0)
 	if body.is_ragdoll():
@@ -456,3 +470,105 @@ func _respawn() -> void:
 	body.knocked = 0.0
 	health_changed.emit(health)
 	respawned.emit()
+
+
+# ------------------------------------------------------------------ driving
+func _enter_vehicle(car: Node3D) -> void:
+	var v: VehicleBody3D = world.make_drivable(car)
+	vehicle = v
+	v.driver = self
+	body.visible = false
+	_cs.disabled = true
+	collision_layer = 0
+	velocity = Vector3.ZERO
+	spring.add_excluded_object(v.get_rid())
+	cam_input_timer = 0.0
+
+
+func _exit_vehicle() -> void:
+	var v := vehicle
+	var sz: Vector3 = v.size
+	var space := get_world_3d().direct_space_state
+	var placed := false
+	for side in [1.0, -1.0]:
+		var p := v.global_transform * Vector3(side * (sz.x * 0.5 + 0.7), 0.3, 0.3)
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p + Vector3.UP * 1.5, p + Vector3.DOWN * 3.0, 1 | 2))
+		if hit.is_empty():
+			continue
+		var q := PhysicsShapeQueryParameters3D.new()
+		var cap := CapsuleShape3D.new()
+		cap.radius = 0.33
+		cap.height = 1.7
+		q.shape = cap
+		q.transform = Transform3D(Basis(), hit.position + Vector3.UP * 0.95)
+		q.collision_mask = 1 | 2 | 32
+		if space.intersect_shape(q, 1).is_empty():
+			global_position = hit.position + Vector3.UP * 0.05
+			placed = true
+			break
+	if not placed:
+		global_position = v.global_position + Vector3.UP * (sz.y + 0.3)
+	spring.remove_excluded_object(v.get_rid())
+	v.driver = null
+	v.throttle = 0.0
+	v.steer_input = 0.0
+	v.handbrake = false
+	vehicle = null
+	body.visible = true
+	_cs.disabled = false
+	collision_layer = 4
+	body.rotation.y = atan2(v.global_transform.basis.z.x, v.global_transform.basis.z.z)
+	velocity = Vector3.ZERO
+
+
+func _drive(_dt: float) -> void:
+	if not is_instance_valid(vehicle):
+		vehicle = null
+		body.visible = true
+		_cs.disabled = false
+		collision_layer = 4
+		return
+	var inp := move_input
+	var kb := Vector2.ZERO
+	if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT): kb.x += 1
+	if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT): kb.x -= 1
+	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP): kb.y += 1
+	if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN): kb.y -= 1
+	if kb.length() > 0.0:
+		inp = kb
+	vehicle.throttle = clampf(inp.y * 1.3, -1.0, 1.0)
+	vehicle.steer_input = -clampf(inp.x * 1.2, -1.0, 1.0)
+	vehicle.handbrake = jump_held or Input.is_physical_key_pressed(KEY_SPACE)
+	vehicle.nitro = sprint_held or Input.is_physical_key_pressed(KEY_SHIFT)
+	global_position = vehicle.global_position
+	var e := Input.is_physical_key_pressed(KEY_E)
+	if (e and not _e_down) or grab_pressed:
+		grab_pressed = false
+		_e_down = e
+		if vehicle.linear_velocity.length() < 9.0:
+			_exit_vehicle()
+		return
+	_e_down = e
+	jump_pressed = false
+	attack_pressed = false
+
+
+func _vehicle_camera(dt: float) -> void:
+	var v := vehicle
+	var target := v.global_position + Vector3(0, 1.4 + v.size.y * 0.35, 0)
+	cam_pivot.global_position = cam_pivot.global_position.lerp(target, 1.0 - exp(-14.0 * dt))
+	cam_input_timer -= dt
+	var spd := v.linear_velocity.length()
+	if cam_input_timer <= 0.0:
+		var f := v.global_transform.basis.z
+		if v.forward_speed() < -2.0:
+			f = -f
+		var behind := atan2(f.x, f.z) + PI
+		cam_yaw = lerp_angle(cam_yaw, behind, 1.0 - exp(-(2.5 if spd > 2.0 else 0.6) * dt))
+		cam_pitch = lerpf(cam_pitch, -0.22, 1.0 - exp(-1.5 * dt))
+	cam_pivot.rotation = Vector3(cam_pitch, cam_yaw, 0)
+	camera.fov = lerpf(camera.fov, 68.0 + clampf(spd / 40.0, 0.0, 1.0) * 22.0, 1.0 - exp(-2.0 * dt))
+	spring.spring_length = lerpf(spring.spring_length, v.size.z * 1.25 + 1.8 + spd * 0.04, 1.0 - exp(-3.0 * dt))
+	_shake = maxf(0.0, _shake - dt)
+	camera.h_offset = randf_range(-1, 1) * _shake * 0.3
+	camera.v_offset = randf_range(-1, 1) * _shake * 0.3 + (randf_range(-1, 1) * 0.015 * clampf(spd / 40.0, 0, 1) if v.nitro else 0.0)

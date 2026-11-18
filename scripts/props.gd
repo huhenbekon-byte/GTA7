@@ -28,7 +28,11 @@ static func random_car(rng: RandomNumberGenerator) -> Node3D:
 
 
 static func car_from(tmpl: Node3D, size: Vector3) -> Node3D:
-	var b := _static()
+	var b := _breakable(1200.0)
+	b.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
+	b.center_of_mass = Vector3(0, size.y * 0.3, 0)
+	b.set_meta("tmpl", tmpl)
+	b.set_meta("size", size)
 	var vis := tmpl.duplicate()
 	b.add_to_group("parked_car")
 	b.add_child(vis)
@@ -137,6 +141,22 @@ static func _static() -> StaticBody3D:
 	return b
 
 
+## Street furniture: stays put (frozen) until a car or an explosion knocks it loose.
+static func _breakable(mass: float) -> RigidBody3D:
+	var b := RigidBody3D.new()
+	b.collision_layer = L_PROPS
+	b.collision_mask = L_WORLD | L_PROPS | 16 | 32
+	b.mass = mass
+	b.freeze_mode = RigidBody3D.FREEZE_MODE_STATIC
+	b.freeze = true
+	b.add_to_group("breakable")
+	var pm := PhysicsMaterial.new()
+	pm.friction = 0.7
+	pm.bounce = 0.05
+	b.physics_material_override = pm
+	return b
+
+
 static func _rigid(mass: float) -> RigidBody3D:
 	var b := RigidBody3D.new()
 	b.collision_layer = L_PROPS
@@ -153,7 +173,7 @@ static func _rigid(mass: float) -> RigidBody3D:
 
 # ---------------------------------------------------------------- static props
 static func lamp() -> Node3D:
-	var b := _static()
+	var b := _breakable(140.0)
 	var pole := m(Color(0.18, 0.2, 0.2), 0.5, 0.6)
 	vis(b, cyl(0.07, 0.1, 6.0, 8), pole, Vector3(0, 3.0, 0))
 	vis(b, cyl(0.18, 0.2, 0.4, 8), pole, Vector3(0, 0.2, 0))
@@ -170,7 +190,7 @@ static func lamp() -> Node3D:
 
 
 static func traffic_light() -> Node3D:
-	var b := _static()
+	var b := _breakable(160.0)
 	var pole := m(Color(0.25, 0.25, 0.22), 0.5, 0.5)
 	vis(b, cyl(0.08, 0.1, 4.2, 8), pole, Vector3(0, 2.1, 0))
 	vis(b, box(0.32, 0.95, 0.3), m(Color(0.12, 0.12, 0.1)), Vector3(0, 3.7, 0.2))
@@ -202,7 +222,7 @@ static func tree(rng: RandomNumberGenerator) -> Node3D:
 
 
 static func bench() -> Node3D:
-	var b := _static()
+	var b := _breakable(60.0)
 	var wood := m(Color(0.55, 0.36, 0.2))
 	var iron := m(Color(0.1, 0.1, 0.1), 0.5, 0.7)
 	for i in 3:
@@ -218,7 +238,7 @@ static func bench() -> Node3D:
 
 
 static func hydrant() -> Node3D:
-	var b := _static()
+	var b := _breakable(90.0)
 	var red := m(Color(0.75, 0.1, 0.08), 0.5, 0.2)
 	vis(b, cyl(0.13, 0.15, 0.6, 10), red, Vector3(0, 0.3, 0))
 	vis(b, sph(0.13, 10), red, Vector3(0, 0.6, 0))
@@ -263,7 +283,7 @@ static func car(rng: RandomNumberGenerator) -> Node3D:
 
 
 static func phone_booth() -> Node3D:
-	var b := _static()
+	var b := _breakable(220.0)
 	var frame := m(Color(0.15, 0.3, 0.55), 0.4, 0.3)
 	var glass := m(Color(0.5, 0.65, 0.75), 0.1, 0.2)
 	vis(b, box(1.0, 0.15, 1.0), frame, Vector3(0, 2.3, 0))
@@ -282,7 +302,7 @@ static func phone_booth() -> Node3D:
 
 
 static func dumpster(rng: RandomNumberGenerator) -> Node3D:
-	var b := _static()
+	var b := _breakable(350.0)
 	var c: Color = [Color(0.15, 0.35, 0.2), Color(0.2, 0.25, 0.45), Color(0.45, 0.2, 0.12)][rng.randi() % 3]
 	var body := m(c, 0.6, 0.4)
 	vis(b, box(2.0, 1.2, 1.2), body, Vector3(0, 0.75, 0))
@@ -313,7 +333,7 @@ static func bus_stop() -> Node3D:
 
 
 static func mailbox() -> Node3D:
-	var b := _static()
+	var b := _breakable(70.0)
 	var blue := m(Color(0.1, 0.22, 0.55), 0.5, 0.3)
 	vis(b, box(0.55, 0.9, 0.5), blue, Vector3(0, 0.75, 0))
 	vis(b, cyl(0.25, 0.25, 0.55, 12), blue, Vector3(0, 1.2, 0), Vector3(0, 0, PI / 2))

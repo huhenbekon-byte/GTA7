@@ -3,7 +3,7 @@ extends SceneTree
 func _init():
 	var a = OS.get_cmdline_user_args()
 	var s = load("res://assets/city/city.glb").instantiate()
-	s.scale = Vector3.ONE * 100
+	pass
 	root.add_child(s)
 	var env = WorldEnvironment.new(); var e = Environment.new()
 	e.background_mode = Environment.BG_COLOR; e.background_color = Color(0.5,0.7,0.9)

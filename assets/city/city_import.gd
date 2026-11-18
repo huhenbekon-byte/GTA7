@@ -53,18 +53,35 @@ func _post_import(scene: Node) -> Object:
 			continue
 		var cell: Vector2i = entry.cell
 		if not faces_by_cell.has(cell):
-			faces_by_cell[cell] = PackedVector3Array()
-		faces_by_cell[cell].append_array(mesh.get_faces())
+			faces_by_cell[cell] = []
+		faces_by_cell[cell].append([mname, mesh.get_faces()])
 
+	# One static body per cell, one shape per material: a ray hit's shape index tells
+	# which material (road, sidewalk, wall...) was hit -> meta "shape_mats".
+	body.queue_free()
+	city.remove_child(body)
+	var col_root := Node3D.new()
+	col_root.name = "Collision"
+	city.add_child(col_root)
+	col_root.owner = city
 	for cell in faces_by_cell:
-		var shape := ConcavePolygonShape3D.new()
-		shape.backface_collision = true
-		shape.set_faces(faces_by_cell[cell])
-		var cs := CollisionShape3D.new()
-		cs.name = "C_%d_%d" % [cell.x, cell.y]
-		cs.shape = shape
-		body.add_child(cs)
-		cs.owner = city
+		var cb := StaticBody3D.new()
+		cb.name = "B_%d_%d" % [cell.x, cell.y]
+		cb.collision_layer = 1
+		cb.collision_mask = 0
+		col_root.add_child(cb)
+		cb.owner = city
+		var mats := PackedStringArray()
+		for pair in faces_by_cell[cell]:
+			var shape := ConcavePolygonShape3D.new()
+			shape.backface_collision = true
+			shape.set_faces(pair[1])
+			var cs := CollisionShape3D.new()
+			cs.shape = shape
+			cb.add_child(cs)
+			cs.owner = city
+			mats.append(pair[0])
+		cb.set_meta("shape_mats", mats)
 
 	scene.free()
 	return city

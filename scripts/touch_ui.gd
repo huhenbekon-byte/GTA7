@@ -76,6 +76,7 @@ func _press(btn: String, down: bool) -> void:
 		return
 	match btn:
 		"jump":
+			player.jump_held = down
 			if down: player.jump_pressed = true
 		"punch":
 			if down: player.attack_pressed = true
@@ -158,9 +159,31 @@ func _draw() -> void:
 		draw_arc(hint, JOY_R * 0.8, 0, TAU, 48, Color(1, 1, 1, 0.18), 2.0)
 		draw_circle(hint, 30, Color(1, 1, 1, 0.15))
 	# buttons
+	var driving: bool = player != null and player.vehicle != null
 	if player and _buttons.has("grab"):
-		_buttons.grab.label = "БРОСИТЬ" if player.held else "ВЗЯТЬ"
+		if driving:
+			_buttons.grab.label = "ВЫЙТИ"
+		elif player.held:
+			_buttons.grab.label = "БРОСИТЬ"
+		elif player.world and player.world.nearest_car(player.global_position) != null:
+			_buttons.grab.label = "СЕСТЬ"
+		else:
+			_buttons.grab.label = "ВЗЯТЬ"
+		_buttons.jump.label = "ТОРМОЗ" if driving else "ПРЫЖОК"
+		_buttons.sprint.label = "НИТРО" if driving else "БЕГ"
+	if driving:
+		var kmh: float = player.vehicle.speed_kmh()
+		var st := "%d" % int(kmh)
+		var fsz := int(64 * u)
+		var sw := _font.get_string_size(st, HORIZONTAL_ALIGNMENT_LEFT, -1, fsz).x
+		var sp := Vector2(s.x * 0.5 - sw * 0.5, s.y - 40 * u)
+		draw_string_outline(_font, sp, st, HORIZONTAL_ALIGNMENT_LEFT, -1, fsz, 8, Color.BLACK)
+		draw_string(_font, sp, st, HORIZONTAL_ALIGNMENT_LEFT, -1, fsz, Color(1, 1, 1))
+		draw_string_outline(_font, sp + Vector2(sw + 8 * u, 0), "км/ч", HORIZONTAL_ALIGNMENT_LEFT, -1, int(22 * u), 5, Color.BLACK)
+		draw_string(_font, sp + Vector2(sw + 8 * u, 0), "км/ч", HORIZONTAL_ALIGNMENT_LEFT, -1, int(22 * u), Color(0.9, 0.9, 0.9))
 	for n in _buttons:
+		if driving and n == "punch":
+			continue
 		var b: Dictionary = _buttons[n]
 		var pressed: bool = n in _btn_touch.values()
 		draw_circle(b.pos, b.r, Color(0.05, 0.05, 0.05, 0.55 if not pressed else 0.8))

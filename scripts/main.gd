@@ -5,6 +5,7 @@ extends Node3D
 const PlayerScript := preload("res://scripts/player.gd")
 const NpcScript := preload("res://scripts/npc.gd")
 const TouchUI := preload("res://scripts/touch_ui.gd")
+const VehicleScript := preload("res://scripts/vehicle.gd")
 
 # minimap covers this square of the world (must match tools/render_minimap.gd)
 const MAP_X0 := -495.0
@@ -54,11 +55,10 @@ var _brown := 0.0
 var _brown2 := 0.0
 var _ready_done := false
 var _boom := 0.0
+var _vehicles: Array[Node] = []
+var _engine_phase := 0.0
+var _engine_sub := 0.0
 
-const PROP_WEIGHTS := {
-	"lamp": 10, "tree": 7, "bench": 5, "hydrant": 5, "booth": 2, "dumpster": 3, "busstop": 2,
-	"mailbox": 3, "traffic": 2, "cone": 8, "crate": 6, "barrel": 5, "trash": 7, "barrier": 4, "pallets": 3, "ball": 1,
-}
 
 
 func _ready() -> void:
@@ -442,6 +442,12 @@ func _fill_audio() -> void:
 		return
 	var n := _audio_pb.get_frames_available()
 	var rain_amt := clampf((_weather - 0.6) / 0.4, 0.0, 1.0)
+	var eng_amp := 0.0
+	var eng_freq := 0.0
+	var veh = player.get("vehicle") if player else null
+	if veh and is_instance_valid(veh):
+		eng_freq = 34.0 + veh.rpm * 115.0
+		eng_amp = 0.09 + absf(veh.throttle) * 0.07
 	var wind := 0.04 + _weather * 0.05
 	for i in n:
 		var w := randf() * 2.0 - 1.0
@@ -449,6 +455,13 @@ func _fill_audio() -> void:
 		_brown2 = lerpf(_brown2, w, 0.35)                        # brighter hiss for rain
 		_boom = maxf(0.0, _boom - 1.0 / 22050.0 * 1.4)
 		var v := _brown * wind * 3.0 + _brown2 * rain_amt * 0.12 + (_brown * 6.0 + w * 0.5) * _boom * _boom * 0.6
+		if eng_amp > 0.0:
+			_engine_phase = fmod(_engine_phase + eng_freq / 22050.0, 1.0)
+			_engine_sub = fmod(_engine_sub + eng_freq * 0.5 / 22050.0, 1.0)
+			var saw := _engine_phase * 2.0 - 1.0
+			var pulse := 1.0 if _engine_phase < 0.32 else -1.0
+			var sub := sin(_engine_sub * TAU)
+			v += (saw * 0.35 + pulse * 0.3 + sub * 0.5 + w * 0.08) * eng_amp
 		_audio_pb.push_frame(Vector2(v, v))
 
 
@@ -504,37 +517,210 @@ func _build_chunk(k: Vector2i) -> void:
 	rng.seed = hash(k)
 	var space := get_world_3d().direct_space_state
 	_place_parked_cars(root, rng, k, space)
-	var total_w := 0
-	for v in PROP_WEIGHTS.values():
-		total_w += v
+	_place_street_furniture(root, k, space)
+	_place_loose_props(root, rng, k, space)
+
+
+# ------------------------------------------------------------------ surfaces
+## Collision materials that are drivable road (asphalt with markings, side streets,
+## concrete lanes, gutters). Everything else counts as sidewalk / yard / plaza.
+const ROAD_MATS := {
+	"material_104_93_36": true, "material_104_93_37": true, "material_104_93_38": true,
+	"material_104_93_39": true, "material_104_93_40": true, "material_104_93_42": true,
+	"material_104_93_43": true, "material_104_93_45": true, "material_104_93_58": true,
+	"material_104_93_68": true, "material_104_93_70": true,
+}
+
+
+func hit_material(hit: Dictionary) -> String:
+	var c: Object = hit.get("collider")
+	if c == null or not c.has_meta("shape_mats"):
+		return ""
+	var arr: PackedStringArray = c.get_meta("shape_mats")
+	var i: int = hit.get("shape", -1)
+	return arr[i] if i >= 0 and i < arr.size() else ""
+
+
+func is_road_hit(hit: Dictionary) -> bool:
+	return not hit.is_empty() and ROAD_MATS.has(hit_material(hit))
+
+
+func _ground(space: PhysicsDirectSpaceState3D, p: Vector3, top: float, bottom: float) -> Dictionary:
+	return space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(p.x, top, p.z), Vector3(p.x, bottom, p.z), 1))
+
+
+## From a sidewalk point, distance along `dir` to where the road starts (-1 if none within 3m).
+func _road_edge(space: PhysicsDirectSpaceState3D, p: Vector3, dir: Vector3, y0: float) -> float:
+	var d := 0.2
+	while d <= 3.0:
+		var h := _ground(space, p + dir * d, y0 + 1.5, y0 - 1.5)
+		if is_road_hit(h):
+			return d
+		if h.is_empty():
+			return -1.0
+		d += 0.2
+	return -1.0
+
+
+## Street furniture in a regular rhythm along sidewalk edges, facing the road.
+func _place_street_furniture(root: Node3D, k: Vector2i, space: PhysicsDirectSpaceState3D) -> void:
+	var used := {}
+	for gx in 10:
+		for gz in 10:
+			var p := Vector3(k.x * CHUNK + gx * 4.0 + 2.0, 0, k.y * CHUNK + gz * 4.0 + 2.0)
+			var h := _ground(space, p, 6.0, -3.0)
+			if h.is_empty() or h.normal.y < 0.97 or is_road_hit(h):
+				continue
+			var pos: Vector3 = h.position
+			var y0 := pos.y
+			var road_dir := Vector3.ZERO
+			for i in 8:
+				var a := i * TAU / 8.0
+				var d := Vector3(cos(a), 0, sin(a))
+				if is_road_hit(_ground(space, pos + d * 2.2, y0 + 1.5, y0 - 1.5)):
+					road_dir += d
+			if road_dir.length() < 0.01:
+				continue
+			road_dir = road_dir.normalized()
+			var axis := Vector3(-road_dir.z, 0, road_dir.x)
+			var e1 := _road_edge(space, pos + axis * 1.5, road_dir, y0)
+			var e2 := _road_edge(space, pos - axis * 1.5, road_dir, y0)
+			if e1 < 0.0 or e2 < 0.0:
+				continue
+			var c1 := pos + axis * 1.5 + road_dir * e1
+			var c2 := pos - axis * 1.5 + road_dir * e2
+			axis = c1 - c2
+			axis.y = 0.0
+			axis = axis.normalized()
+			var n := Vector3(axis.z, 0, -axis.x)
+			if n.dot(road_dir) < 0.0:
+				n = -n
+			var e := _road_edge(space, pos, n, y0)
+			if e < 0.0:
+				continue
+			var curb := pos + n * e
+			# regular slots along the curb (6 m), stable across chunks
+			var slot := Vector2i(roundi(curb.x / 6.0), roundi(curb.z / 6.0))
+			if used.has(slot) or _furniture_slots.has(slot):
+				continue
+			var hsh := absi(hash(slot))
+			var r := float(hsh % 1000) / 1000.0
+			var kind := ""
+			var inset := 0.75
+			if r < 0.30:
+				kind = "lamp"
+				inset = 0.55
+			elif r < 0.48:
+				kind = "tree"
+				inset = 1.3
+			elif r < 0.58:
+				kind = "bench"
+				inset = 1.2
+			elif r < 0.70:
+				kind = "trash"
+			elif r < 0.78:
+				kind = "hydrant"
+				inset = 0.5
+			elif r < 0.83:
+				kind = "mailbox"
+			elif r < 0.86:
+				kind = "booth"
+				inset = 1.0
+			elif r < 0.90:
+				kind = "busstop"
+				inset = 1.4
+			elif r < 0.93:
+				kind = "traffic"
+				inset = 0.5
+			else:
+				used[slot] = true
+				continue
+			var spot := curb - n * inset
+			var yaw := atan2(n.x, n.z)
+			var fp: Array = Props.KINDS[kind]
+			var ok := true
+			# whole footprint must be off the road
+			var cb := Basis(Vector3.UP, yaw)
+			for cx in [-1.0, 1.0]:
+				for cz in [-1.0, 1.0]:
+					var cp := spot + cb * Vector3(cx * float(fp[0]), 0, cz * float(fp[1]))
+					var gh := _ground(space, cp, y0 + 1.5, y0 - 1.5)
+					if gh.is_empty() or is_road_hit(gh) or absf(gh.position.y - y0) > 0.25:
+						ok = false
+			if not ok or not _clear(Vector3(spot.x, y0, spot.z), Vector3(fp[0], 1.4, fp[1]), yaw):
+				continue
+			used[slot] = true
+			_furniture_slots[slot] = true
+			var node := Props.make(kind, rng_for(slot))
+			root.add_child(node)
+			node.global_position = Vector3(spot.x, y0 + 0.01, spot.z)
+			node.rotation.y = yaw
+			node.tree_exited.connect(func(): _furniture_slots.erase(slot))
+
+
+var _furniture_slots := {}
+
+func rng_for(key) -> RandomNumberGenerator:
+	var r := RandomNumberGenerator.new()
+	r.seed = hash(key)
+	return r
+
+
+## Loose physics clutter (crates, barrels, pallets, bins, cones...) against walls in yards
+## and alleys, never on the road.
+func _place_loose_props(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, space: PhysicsDirectSpaceState3D) -> void:
+	var kinds := ["crate", "crate", "barrel", "barrel", "pallets", "trash", "cone", "barrier", "dumpster", "ball"]
 	var placed := 0
-	for attempt in 22:
-		if placed >= 11:
+	for attempt in 16:
+		if placed >= 5:
 			break
 		var p := Vector3(k.x * CHUNK + rng.randf() * CHUNK, 0, k.y * CHUNK + rng.randf() * CHUNK)
-		var pick := rng.randi() % total_w
-		var kind := ""
-		for kk in PROP_WEIGHTS:
-			pick -= PROP_WEIGHTS[kk]
-			if pick < 0:
-				kind = kk
-				break
-		var yaw := rng.randf() * TAU
-		if p.distance_to(Vector3(player.global_position.x, 0, player.global_position.z)) < 3.0:
+		var h := _ground(space, p, 6.0, -3.0)
+		if h.is_empty() or h.normal.y < 0.97 or is_road_hit(h):
 			continue
-		var q := PhysicsRayQueryParameters3D.create(Vector3(p.x, 7.0, p.z), Vector3(p.x, -3.0, p.z), 1)
-		var hit := space.intersect_ray(q)
-		if hit.is_empty() or hit.normal.y < 0.97:
+		var pos: Vector3 = h.position
+		var y0 := pos.y
+		# find a wall nearby
+		var best := 99.0
+		var wall_n := Vector3.ZERO
+		var wall_p := Vector3.ZERO
+		for i in 8:
+			var a := i * TAU / 8.0
+			var d := Vector3(cos(a), 0, sin(a))
+			var from := pos + Vector3.UP * 0.6
+			var wh := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, from + d * 4.0, 1))
+			if not wh.is_empty() and absf(wh.normal.y) < 0.3:
+				var dist := from.distance_to(wh.position)
+				if dist < best:
+					best = dist
+					wall_n = wh.normal
+					wall_p = wh.position
+		if best > 4.0:
 			continue
+		var kind: String = kinds[rng.randi() % kinds.size()]
 		var fp: Array = Props.KINDS[kind]
-		var tall := 1.6 if kind != "car" else 1.2
-		if not _clear(hit.position, Vector3(fp[0], tall, fp[1]), yaw):
-			continue
-		var node := Props.make(kind, rng)
-		root.add_child(node)
-		node.global_position = hit.position + Vector3(0, 0.01, 0)
-		node.rotation.y = yaw
-		placed += 1
+		var spot := Vector3(wall_p.x, y0, wall_p.z) + Vector3(wall_n.x, 0, wall_n.z).normalized() * (float(fp[1]) + 0.12)
+		var yaw := atan2(wall_n.x, wall_n.z)
+		var count := 1 if kind in ["dumpster", "barrier", "ball", "cone"] else rng.randi_range(1, 3)
+		var along := Vector3(-wall_n.z, 0, wall_n.x).normalized()
+		for c in count:
+			var sp := spot + along * (c * (float(fp[0]) * 2.0 + 0.1))
+			var gh := _ground(space, sp, y0 + 1.5, y0 - 1.5)
+			if gh.is_empty() or is_road_hit(gh) or absf(gh.position.y - y0) > 0.2:
+				break
+			if not _clear(Vector3(sp.x, y0, sp.z), Vector3(fp[0], 0.8, fp[1]), yaw):
+				break
+			var node := Props.make(kind, rng)
+			root.add_child(node)
+			node.global_position = Vector3(sp.x, y0 + 0.02, sp.z)
+			node.rotation.y = yaw + rng.randf_range(-0.15, 0.15)
+			placed += 1
+		# a stacked crate now and then
+		if kind == "crate" and rng.randf() < 0.4 and _clear(Vector3(spot.x, y0 + 1.0, spot.z), Vector3(0.4, 0.4, 0.4)):
+			var top := Props.make("crate", rng)
+			root.add_child(top)
+			top.global_position = Vector3(spot.x, y0 + 1.05, spot.z)
+			top.rotation.y = yaw + 0.3
 
 
 func _manage_npcs() -> void:
@@ -552,7 +738,7 @@ func _manage_npcs() -> void:
 		var space := get_world_3d().direct_space_state
 		var q := PhysicsRayQueryParameters3D.create(Vector3(c.x, pp.y + 6.0, c.z), Vector3(c.x, pp.y - 6.0, c.z), 1)
 		var hit := space.intersect_ray(q)
-		if hit.is_empty() or hit.normal.y < 0.9 or not _clear(hit.position, Vector3(0.35, 0.9, 0.35)):
+		if hit.is_empty() or hit.normal.y < 0.9 or is_road_hit(hit) or not _clear(hit.position, Vector3(0.35, 0.9, 0.35)):
 			return
 		var npc := CharacterBody3D.new()
 		npc.set_script(NpcScript)
@@ -584,10 +770,10 @@ func _edge_dist(space: PhysicsDirectSpaceState3D, p: Vector3, dir: Vector3, y0: 
 		wd = Vector2(wall.position.x - p.x, wall.position.z - p.z).length()
 	var d := 0.3
 	while d < minf(wd, maxd):
-		var h := _ground_h(space, p + dir * d, y0)
-		if is_nan(h) or h < y0 - 0.12:
+		var gh := _ground(space, p + dir * d, y0 + 2.2, y0 - 1.5)
+		if gh.is_empty() or gh.position.y < y0 - 0.12:
 			return [d, -1]
-		if h > y0 + 0.06:
+		if gh.position.y > y0 + 0.06 or not is_road_hit(gh):
 			return [d, 2]
 		d += 0.3
 	if wd <= maxd:
@@ -601,7 +787,7 @@ func _place_parked_cars(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, s
 	for attempt in 5:
 		var p := Vector3(k.x * CHUNK + rng.randf() * CHUNK, 0, k.y * CHUNK + rng.randf() * CHUNK)
 		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(p.x, 7.0, p.z), Vector3(p.x, -3.0, p.z), 1))
-		if hit.is_empty() or hit.normal.y < 0.97:
+		if hit.is_empty() or hit.normal.y < 0.97 or not is_road_hit(hit):
 			continue
 		var start: Vector3 = hit.position
 		var y0 := start.y
@@ -662,8 +848,8 @@ func _try_put_car(space: PhysicsDirectSpaceState3D, root: Node3D, tmpl: Node3D, 
 	for cx in [-0.5, 0.5]:
 		for cz in [-0.5, 0.0, 0.5]:
 			var cp := pos + cb * Vector3(cx * size.x, 0, cz * size.z)
-			var h := _ground_h(space, cp, y0)
-			if is_nan(h) or absf(h - y0) > 0.08:
+			var gh := _ground(space, cp, y0 + 2.2, y0 - 1.5)
+			if gh.is_empty() or absf(gh.position.y - y0) > 0.08 or not is_road_hit(gh):
 				return false
 	if not _clear(Vector3(pos.x, y0, pos.z), Vector3(size.x * 0.5, size.y * 0.5 - 0.15, size.z * 0.5), yaw):
 		return false
@@ -801,7 +987,7 @@ func explode(pos: Vector3) -> void:
 	sph.radius = 8.0
 	qp.shape = sph
 	qp.transform = Transform3D(Basis(), pos)
-	qp.collision_mask = 2 | 8
+	qp.collision_mask = 2 | 8 | 32
 	for r in space.intersect_shape(qp, 64):
 		var o: Node3D = r.collider
 		var d := o.global_position - pos
@@ -810,7 +996,10 @@ func explode(pos: Vector3) -> void:
 		if o is RigidBody3D:
 			var rb := o as RigidBody3D
 			if rb.freeze:
-				continue
+				if rb.is_in_group("breakable") and f > 0.25:
+					rb.freeze = false
+				else:
+					continue
 			rb.apply_central_impulse(dir * 16.0 * f * minf(rb.mass, 60.0))
 			rb.angular_velocity += Vector3(randf_range(-8, 8), randf_range(-8, 8), randf_range(-8, 8)) * f
 			if rb.is_in_group("explosive") and f > 0.3:
@@ -825,3 +1014,57 @@ func explode(pos: Vector3) -> void:
 		player.knockdown(((player.global_position - pos) + Vector3.UP).normalized() * 700.0 * f)
 	player.set("_shake", maxf(player.get("_shake"), clampf(1.0 - pd / 40.0, 0.0, 0.8)))
 	alarm(pos, 40.0, false)
+
+
+# ------------------------------------------------------------------ vehicles
+## Nearest enterable car (parked or abandoned vehicle) around `pos`.
+func nearest_car(pos: Vector3, reach := 1.6) -> Node3D:
+	var best: Node3D = null
+	var best_d := 999.0
+	for c in get_tree().get_nodes_in_group("parked_car") + get_tree().get_nodes_in_group("vehicle"):
+		var n := c as Node3D
+		if n.get("driver") != null:
+			continue
+		var sz: Vector3 = n.get_meta("size") if n.has_meta("size") else n.get("size")
+		# distance to the car's footprint rectangle
+		var lp := n.global_transform.affine_inverse() * pos
+		var dx := maxf(absf(lp.x) - sz.x * 0.5, 0.0)
+		var dz := maxf(absf(lp.z) - sz.z * 0.5, 0.0)
+		var d := Vector2(dx, dz).length()
+		if d < reach and d < best_d and absf(lp.y) < 2.5:
+			best_d = d
+			best = n
+	return best
+
+
+## Turns a parked car into a drivable vehicle (or returns the vehicle itself).
+func make_drivable(car: Node3D) -> VehicleBody3D:
+	if car is VehicleBody3D:
+		return car
+	var tmpl: Node3D = car.get_meta("tmpl")
+	var size: Vector3 = car.get_meta("size")
+	var v := VehicleBody3D.new()
+	v.set_script(VehicleScript)
+	v.setup(tmpl, size)
+	add_child(v)
+	var xf := car.global_transform
+	if xf.basis.y.y < 0.5:
+		xf.basis = Basis(Vector3.UP, atan2(xf.basis.z.x, xf.basis.z.z))
+	v.global_transform = Transform3D(xf.basis.orthonormalized(), xf.origin + Vector3.UP * 0.15)
+	v.crashed.connect(func(st: float): player.set("_shake", clampf(st * 0.03, 0.1, 0.6)))
+	car.queue_free()
+	_vehicles.append(v)
+	# keep only a handful of abandoned vehicles around
+	if _vehicles.size() > 5:
+		var far: Node = null
+		var fd := -1.0
+		for o in _vehicles:
+			if is_instance_valid(o) and o.get("driver") == null:
+				var d := (o as Node3D).global_position.distance_to(player.global_position)
+				if d > fd:
+					fd = d
+					far = o
+		if far:
+			_vehicles.erase(far)
+			far.queue_free()
+	return v

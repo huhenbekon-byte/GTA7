@@ -36,7 +36,7 @@ func _ready() -> void:
 	_rng.randomize()
 	add_to_group("npc")
 	collision_layer = 8
-	collision_mask = 1 | 2 | 4 | 8
+	collision_mask = 1 | 2 | 4 | 8 | 32
 	floor_max_angle = deg_to_rad(50)
 	floor_snap_length = 0.4
 	var shape := CapsuleShape3D.new()
@@ -293,6 +293,9 @@ func _steer(dt: float, keep_level: bool) -> void:
 	var g := space.intersect_ray(PhysicsRayQueryParameters3D.create(ahead, ahead + Vector3.DOWN * 2.5, 1, ex))
 	var bad: bool = g.is_empty() or (g.position.y < global_position.y - 0.6)
 	if keep_level and not g.is_empty() and g.position.y < _level - 0.07 and _rng.randf() < 0.97:
+		bad = true
+	# pedestrians stay off the road (they only rarely cross)
+	if keep_level and world and world.is_road_hit(g) and _rng.randf() < 0.985:
 		bad = true
 	if bad:
 		turn += 2.5 if _rng.randf() < 0.5 else -2.5
