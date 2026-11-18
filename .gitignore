@@ -1,0 +1,4 @@
+build/
+.godot/
+*.apk
+!apk/GTA7.apk
