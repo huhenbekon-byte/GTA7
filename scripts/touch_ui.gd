@@ -37,6 +37,7 @@ func _ready() -> void:
 	sm.shader = load("res://scripts/minimap.gdshader")
 	minimap.material = sm
 	minimap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	minimap.show_behind_parent = true   # route, blips and arrow are drawn on top of it
 	add_child(minimap)
 	get_viewport().size_changed.connect(_layout)
 	_layout()
@@ -258,6 +259,34 @@ func _draw() -> void:
 		var pts := PackedVector2Array([tip, mc - fwd * 8 * u + side * 8 * u, mc - fwd * 4 * u, mc - fwd * 8 * u - side * 8 * u])
 		draw_colored_polygon(pts, Color(1, 1, 1))
 		draw_polyline(pts + PackedVector2Array([tip]), Color(0, 0, 0), 1.5)
+	# GPS route on the minimap + compass arrow
+	var nav: Node = world.get("navigator") if world else null
+	if nav != null and player and nav.get("target") != null and is_instance_valid(nav.target):
+		var route: PackedVector3Array = nav.path
+		var mc2 := minimap.position + minimap.size * 0.5
+		var rad := minimap.size.x * 0.46
+		var prevp := _minimap_point(player.global_position)
+		for wp in route:
+			var sp := _minimap_point(wp)
+			if prevp.distance_to(mc2) < rad and sp.distance_to(mc2) < rad:
+				draw_line(prevp, sp, Color(0.1, 0.05, 0.15, 0.9), 7 * u)
+				draw_line(prevp, sp, Color(0.78, 0.35, 1.0), 4 * u)
+			prevp = sp
+		var dist: float = nav.distance
+		if dist > 6.0:
+			var gp: Vector3 = nav.guide_point(player.global_position)
+			var dir2 := (_minimap_point(gp) - mc2)
+			if dir2.length() < 0.001:
+				dir2 = Vector2(0, -1)
+			dir2 = dir2.normalized()
+			var ac := Vector2(s.x * 0.5, 100 * u)
+			var side2 := Vector2(-dir2.y, dir2.x)
+			var tip := ac + dir2 * 26 * u
+			var pts2 := PackedVector2Array([tip, ac - dir2 * 14 * u + side2 * 18 * u, ac - dir2 * 4 * u, ac - dir2 * 14 * u - side2 * 18 * u])
+			draw_colored_polygon(pts2, Color(0.78, 0.35, 1.0))
+			draw_polyline(pts2 + PackedVector2Array([tip]), Color(0, 0, 0), 2.0)
+			var dtxt := ("%d м" % int(dist)) if dist < 1000.0 else ("%.1f км" % (dist / 1000.0))
+			_draw_text_c("%s · %s" % [nav.target_name, dtxt], Vector2(s.x * 0.5, 150 * u), int(20 * u), Color(0.92, 0.8, 1.0))
 	# mission blips on the minimap
 	if ms != null and ms.has_method("get_blips") and player:
 		for bl in ms.get_blips():

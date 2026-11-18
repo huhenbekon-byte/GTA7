@@ -145,6 +145,16 @@ func get_blips() -> Array:
 	return out
 
 
+## For the GPS navigator: [node, name] of where the player should go.
+func nav_target():
+	match stage:
+		St.TO_OFFICER, St.ESCORT:
+			return [officer, "Офицер Петров"]
+		St.FIND, St.CHASE:
+			return [hooligan, "Хулиган"]
+	return null
+
+
 func can_arrest() -> bool:
 	if stage != St.CHASE or not is_instance_valid(hooligan):
 		return false
@@ -211,6 +221,7 @@ func _setup_actors() -> void:
 	if off_pos == null:
 		off_pos = car_pos + Vector3(2.5, 0, 0)
 	officer = _spawn_npc(off_pos, Color.WHITE, "Петров", Color.WHITE, POLICE_MODEL)
+	world.petrov = officer
 	# hooligan ~110 m away on a sidewalk, roughly opposite side from the police
 	var away: Vector3 = (base - car_pos)
 	away.y = 0.0
@@ -498,8 +509,8 @@ func _run() -> void:
 	await _wait(3.0)
 	if is_instance_valid(hooligan):
 		hooligan.queue_free()
-	officer.set("scripted", false)
-	officer.set("persistent", false)
+	# Petrov stays on duty at his car
+	officer.script_target = null
 	_marker.queue_free()
 	_cam.queue_free()
 	world.mission = null

@@ -7,6 +7,7 @@ const NpcScript := preload("res://scripts/npc.gd")
 const TouchUI := preload("res://scripts/touch_ui.gd")
 const VehicleScript := preload("res://scripts/vehicle.gd")
 const Mission1Script := preload("res://scripts/mission1.gd")
+const NavigatorScript := preload("res://scripts/navigator.gd")
 const SAVE_PATH := "user://save.cfg"
 
 # minimap covers this square of the world (must match tools/render_minimap.gd)
@@ -61,6 +62,8 @@ var _bang := 0.0
 var money := 0
 var missions_done := {}
 var mission: Node = null
+var navigator: Node = null
+var petrov: Node3D = null
 var _mission_timer := 4.0
 var _vehicles: Array[Node] = []
 var _engine_phase := 0.0
@@ -107,6 +110,10 @@ func _ready() -> void:
 	ui.player = player
 	ui.world = self
 	player.respawned.connect(func(): ui.show_message("Возрождение", 2.0))
+	navigator = Node.new()
+	navigator.set_script(NavigatorScript)
+	navigator.set("world", self)
+	add_child(navigator)
 
 
 func world_to_map_uv(p: Vector3) -> Vector2:
@@ -296,6 +303,9 @@ func _physics_process(_dt: float) -> void:
 		ui.show_message("Добро пожаловать в город", 3.0)
 	_stream_chunks()
 	_manage_npcs()
+	if missions_done.has("m1") and petrov == null and _mission_timer > -100.0:
+		_mission_timer = -1000.0
+		_spawn_petrov_on_duty()
 	if mission == null and not missions_done.has("m1"):
 		_mission_timer -= _dt
 		if _mission_timer <= 0.0:
@@ -1251,3 +1261,33 @@ func spawn_car(model: String, pos: Vector3, yaw: float) -> Node3D:
 	car.global_position = pos + Vector3.UP * 0.02
 	car.rotation.y = yaw
 	return car
+
+
+## After mission 1 officer Petrov stays on duty next to his police car.
+func _spawn_petrov_on_duty() -> void:
+	var base := player.global_position
+	var car_pos = null
+	for i in 6:
+		var a := _rng.randf() * TAU
+		car_pos = find_spot(base + Vector3(cos(a), 0, sin(a)) * 50.0, 18.0, true, Vector3(1.2, 1.0, 2.6))
+		if car_pos != null:
+			break
+	if car_pos == null:
+		return
+	spawn_car("Car_0", car_pos, _rng.randf() * TAU)
+	var op = find_spot(car_pos, 7.0, false)
+	if op == null:
+		op = car_pos + Vector3(2.5, 0, 0)
+	var n := CharacterBody3D.new()
+	n.set_script(NpcScript)
+	n.set("world", self)
+	n.set("persistent", true)
+	n.set("scripted", true)
+	n.set("no_react", true)
+	n.set("preset_clothes", Color.WHITE)
+	n.set("preset_skin", Color.WHITE)
+	n.set("model_override", "res://assets/characters/police_src.glb")
+	n.set("label", "Петров")
+	add_child(n)
+	n.global_position = op + Vector3.UP * 0.05
+	petrov = n
