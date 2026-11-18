@@ -13,6 +13,10 @@ class_name Humanoid
 @export var hair_color := Color(0.06, 0.05, 0.05)
 @export var has_cap := false
 @export var cap_color := Color(0.1, 0.1, 0.1)
+## Optional rigged model (Mixamo skeleton). When set, the procedural rig drives its bones
+## instead of drawing the primitive "Part" body.
+@export var model_path := ""
+@export var model_height := 1.8
 
 # --- animation inputs (set by controller every frame) -------------------------
 var speed := 0.0            # horizontal speed m/s
@@ -56,6 +60,13 @@ const HIP_H := 0.94
 
 static var _mat_cache := {}
 
+var _skel: Skeleton3D
+var _bone_map := []   # [bone_idx, pivot, pre: Quaternion, post: Quaternion, rest_rot, gq, gq_inv]
+var _hips_bone := -1
+var _hips_rest_pos := Vector3.ZERO
+var _model_scale := 1.0
+var _fist := 0.0
+
 
 func _ready() -> void:
 	_rng.randomize()
@@ -75,6 +86,8 @@ static func mat(c: Color, rough := 0.85) -> StandardMaterial3D:
 
 
 func _part(parent: Node3D, mesh: Mesh, color: Color, pos: Vector3, rot := Vector3.ZERO, scl := Vector3.ONE) -> MeshInstance3D:
+	if model_path != "":
+		return null
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.material_override = mat(color)
@@ -185,8 +198,92 @@ func _build() -> void:
 			kn_r = kn
 			an_r = an
 
+	if model_path != "":
+		_setup_model()
 	for mi in find_children("*", "MeshInstance3D", true, false):
 		(mi as MeshInstance3D).gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+
+
+# --- rigged model support ----------------------------------------------------------
+func _bone(names: Array) -> int:
+	for i in _skel.get_bone_count():
+		var bn := _skel.get_bone_name(i)
+		for n in names:
+			if bn.begins_with("mixamorig_" + n + "_") or bn == "mixamorig_" + n or bn == "mixamorig:" + n or bn == n:
+				return i
+	return -1
+
+
+func _setup_model() -> void:
+	var model: Node3D = (load(model_path) as PackedScene).instantiate()
+	add_child(model)
+	var sks := model.find_children("*", "Skeleton3D", true, false)
+	if sks.is_empty():
+		push_warning("model has no skeleton")
+		return
+	_skel = sks[0]
+	var head_top := _bone(["HeadTop_End"])
+	var top_y := (_skel.get_bone_global_rest(head_top).origin.y if head_top >= 0 else 17.0)
+	_model_scale = model_height / (top_y * 1.03)
+	model.scale = Vector3.ONE * _model_scale
+	for mi in model.find_children("*", "MeshInstance3D", true, false):
+		(mi as MeshInstance3D).extra_cull_margin = 2.0 / _model_scale
+
+	# arms are authored in T-pose: correction that brings them down along the body
+	var c_l := _arm_correction(_bone(["LeftArm"]), _bone(["LeftHand"]), Vector3(0.12, -1, 0))
+	var c_r := _arm_correction(_bone(["RightArm"]), _bone(["RightHand"]), Vector3(-0.12, -1, 0))
+	var I := Quaternion.IDENTITY
+	var spec := [
+		[["Hips"], hips, I, I], [["Spine"], spine, I, I], [["Spine2"], chest, I, I],
+		[["Neck"], neck, I, I], [["Head"], head, I, I],
+		[["LeftArm"], sh_l, I, c_l], [["LeftForeArm"], el_l, c_l.inverse(), c_l],
+		[["RightArm"], sh_r, I, c_r], [["RightForeArm"], el_r, c_r.inverse(), c_r],
+		[["LeftUpLeg"], hip_l, I, I], [["LeftLeg"], kn_l, I, I], [["LeftFoot"], an_l, I, I],
+		[["RightUpLeg"], hip_r, I, I], [["RightLeg"], kn_r, I, I], [["RightFoot"], an_r, I, I],
+	]
+	for sp in spec:
+		var b := _bone(sp[0])
+		if b < 0:
+			continue
+		var gq := _skel.get_bone_global_rest(b).basis.get_rotation_quaternion()
+		_bone_map.append([b, sp[1], sp[2], sp[3], _skel.get_bone_rest(b).basis.get_rotation_quaternion(), gq, gq.inverse()])
+	# fingers: curled procedurally (relaxed hand / fist)
+	for side in [["Left", c_l, -1.0], ["Right", c_r, 1.0]]:
+		for f in ["Index", "Middle", "Ring", "Pinky"]:
+			for j in [1, 2, 3]:
+				var fb := _bone([side[0] + "Hand" + f + str(j)])
+				if fb < 0:
+					continue
+				var fq := _skel.get_bone_global_rest(fb).basis.get_rotation_quaternion()
+				var cq: Quaternion = side[1]
+				_bone_map.append([fb, null, cq.inverse(), cq, _skel.get_bone_rest(fb).basis.get_rotation_quaternion(), fq, fq.inverse(), side[2]])
+	_hips_bone = _bone(["Hips"])
+	_hips_rest_pos = _skel.get_bone_rest(_hips_bone).origin
+
+
+func _arm_correction(arm: int, hand: int, want: Vector3) -> Quaternion:
+	if arm < 0 or hand < 0:
+		return Quaternion.IDENTITY
+	var d := _skel.get_bone_global_rest(hand).origin - _skel.get_bone_global_rest(arm).origin
+	return Quaternion(d.normalized(), want.normalized())
+
+
+func _apply_skeleton() -> void:
+	var fist := 1.0 if (_attack > 0.0 or speed > 5.0 or knocked > 0.0) else 0.0
+	_fist = _damp(_fist, fist, 12.0, get_process_delta_time())
+	var curl := lerpf(0.3, 1.25, _fist)
+	for m in _bone_map:
+		var pivot: Node3D = m[1]
+		var local_q: Quaternion = pivot.quaternion if pivot else Quaternion(Vector3(0, 0, 1), curl * m[7])
+		var r: Quaternion = m[2] * local_q * m[3]
+		var pose: Quaternion = m[4] * (m[6] * r * m[5])
+		_skel.set_bone_pose_rotation(m[0], pose.normalized())
+	if _hips_bone >= 0:
+		var off := (hips.position - Vector3(0, HIP_H, 0)) / _model_scale
+		var parent := _skel.get_bone_parent(_hips_bone)
+		if parent >= 0:
+			off = _skel.get_bone_global_rest(parent).basis.inverse() * off
+		_skel.set_bone_pose_position(_hips_bone, _hips_rest_pos + off)
 
 
 # --- public triggers -----------------------------------------------------------
@@ -401,3 +498,5 @@ func _process(dt: float) -> void:
 	_set_rot(sh_r, Vector3(ra.x, ra.y, -ra.z), k, dt)
 	el_l.rotation.x = _damp(el_l.rotation.x, le, k, dt)
 	el_r.rotation.x = _damp(el_r.rotation.x, re, k, dt)
+	if _skel:
+		_apply_skeleton()
