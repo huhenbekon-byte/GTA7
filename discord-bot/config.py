@@ -20,7 +20,6 @@ ADMIN = "Администратор"
 MOD = "Модератор"
 DEV = "Разработчик / Тестер"
 CITIZEN = "Гражданин"
-NEWBIE = "Новичок"
 MUTE = "Мут"
 BOTS = "Боты"
 
@@ -99,7 +98,6 @@ ROLES = [
     *[dict(name=f["leader"], color=f["leader_color"], hoist=False, perms={}) for f in FACTIONS],
     *[dict(name=f["member"], color=f["color"], hoist=True, perms={}) for f in FACTIONS],
     dict(name=CITIZEN, color=0xCDB891, hoist=True, perms={}),
-    dict(name=NEWBIE, color=0x95A5A6, hoist=False, perms={}),
     dict(name=MUTE, color=0x3B3B3B, hoist=False, perms={}),
     dict(name=BOTS, color=0x607D8B, hoist=True, perms={}),
 ]
@@ -111,7 +109,7 @@ EVERYONE_PERMS = dict(
     embed_links=True, attach_files=True, add_reactions=True, use_external_emojis=True,
     use_external_stickers=True, use_application_commands=True, connect=True, speak=True,
     stream=True, use_voice_activation=True, use_embedded_activities=True,
-    change_nickname=False, create_instant_invite=True, mention_everyone=False,
+    change_nickname=True, create_instant_invite=True, mention_everyone=False,
 )
 
 # ── Каналы ──────────────────────────────────────────────────────────────
@@ -180,7 +178,7 @@ def _opg(key, cat_name):
     ])
 
 
-_CITIZENS = [CITIZEN] + STAFF + [DEV]
+_CITIZENS = [EVERYONE]   # верификации нет: всё открыто сразу при входе
 _GOV_ALL = [r for f in GOV for r in _members(f)] + STAFF
 _OPG_ALL = [r for f in OPG for r in _members(f)] + STAFF
 _OPG_LEADERS = [f["leader"] for f in OPG] + ADMINS
@@ -193,9 +191,6 @@ CATEGORIES = [
         T("changelog", "📋・список-изменений", "Что изменилось в каждой версии."),
         T("download", "📲・скачать-игру", "Ссылка на APK и инструкция установки.", post="download"),
         T("events", "🎉・анонсы-событий", "События города, праздники, мероприятия."),
-    ]),
-    dict(key="verify", name="✅ ВЕРИФИКАЦИЯ", view=[EVERYONE] + STAFF, send=ADMINS, hidden=[CITIZEN], channels=[
-        T("verify", "✅・верификация", "Укажи игровой ник и получи роль «Гражданин».", post="verify"),
     ]),
     dict(key="general", name="💬 ОБЩЕНИЕ", view=_CITIZENS, filtered=True, channels=[
         T("chat", "☭・общий-чат", "Общение граждан. Без мата и оскорблений."),
@@ -303,7 +298,6 @@ CATEGORIES = [
 # Куда бот пишет. Формат: "категория.канал".
 CH_SERVER_LOG = "bots.server_log"
 CH_PUNISH_LOG = "admin.punish_log"
-CH_VERIFY = "verify.verify"
 CH_WELCOME = "general.chat"
 CH_IDEAS = "general.ideas"
 CH_ADMIN_COMPLAINTS = "support.admin_complaints"

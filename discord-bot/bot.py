@@ -197,7 +197,6 @@ class Bot(discord.Client):
         self.mat = [re.compile(p) for p in C.MAT_PATTERNS]
 
     async def setup_hook(self):
-        self.add_view(VerifyView())
         self.add_view(TicketPanel())
         self.add_view(TicketControl())
         self.add_view(OrgPanel())
@@ -253,7 +252,7 @@ class Bot(discord.Client):
     async def on_member_join(self, m: discord.Member):
         if m.guild.id != self.guild_id:
             return
-        r = role(m.guild, C.BOTS if m.bot else C.NEWBIE)
+        r = role(m.guild, C.BOTS if m.bot else C.CITIZEN)
         if r:
             try:
                 await m.add_roles(r, reason="Автороль")
@@ -264,9 +263,8 @@ class Bot(discord.Client):
         e = card("📥 Зашёл на сервер", f"{m.mention} `{m}`\nАккаунт создан <t:{int(m.created_at.timestamp())}:R>",
                  C.GREEN)
         await log(m.guild, C.CH_SERVER_LOG, e)
-        if not m.bot and isinstance(ch := chan(m.guild, C.CH_VERIFY), discord.TextChannel):
-            await ch.send(TX.WELCOME_JOIN.format(user=m.mention), delete_after=600,
-                          allowed_mentions=discord.AllowedMentions(users=True))
+        if not m.bot and isinstance(ch := chan(m.guild, C.CH_WELCOME), discord.TextChannel):
+            await ch.send(embeds=embeds_from(TX.WELCOME_CITIZEN, C.GOLD, user=m.mention))
 
     async def on_member_remove(self, m: discord.Member):
         if m.guild.id == self.guild_id:
@@ -367,7 +365,7 @@ async def setup_guild(guild: discord.Guild, say, refresh=None, members=None):
         r = role(guild, spec["name"])
         p = discord.Permissions(**perms(**spec["perms"]))
         kw = dict(colour=discord.Colour(spec["color"]), hoist=spec["hoist"], permissions=p,
-                  mentionable=spec["name"] not in (C.MUTE, C.NEWBIE, C.BOTS))
+                  mentionable=spec["name"] not in (C.MUTE, C.BOTS))
         if r is None:
             r = _cache(guild, await guild.create_role(name=spec["name"], reason="Настройка СССР РП", **kw))
         elif r < me.top_role and not r.managed:
@@ -445,13 +443,13 @@ async def setup_guild(guild: discord.Guild, say, refresh=None, members=None):
 
     # 5. Роли участникам
     await say("5/6 Роли участникам, у которых их нет…")
-    newbie, bots, citizen = role(guild, C.NEWBIE), role(guild, C.BOTS), role(guild, C.CITIZEN)
+    bots, citizen = role(guild, C.BOTS), role(guild, C.CITIZEN)
     for m in (members if members is not None else guild.members):
         try:
             if m.bot and bots and bots not in m.roles and not m == me:
                 await m.add_roles(bots)
-            elif not m.bot and citizen not in m.roles and newbie not in m.roles:
-                await m.add_roles(newbie)
+            elif not m.bot and citizen and citizen not in m.roles:
+                await m.add_roles(citizen)
         except discord.HTTPException:
             pass
 
@@ -466,7 +464,6 @@ POSTS = {
     "charter": TX.CHARTER, "opg_ranks": TX.OPG_RANKS, "territory": TX.TERRITORY,
 }
 PANELS = {
-    "verify": (TX.VERIFY, lambda: VerifyView()),
     "tickets": (TX.TICKETS, lambda: TicketPanel()),
     "apply_org": (TX.APPLY_ORG, lambda: OrgPanel()),
     "apply_admin": (TX.APPLY_ADMIN, lambda: SimpleApplyPanel("admin")),
@@ -503,7 +500,7 @@ async def publish(guild, key, post, cat=None, repost=False):
             await msg.edit(embeds=embeds, view=view)
         return  # сообщение уже есть (возможно, лидер заменил его своим) — не дублируем
     msg = await ch.send(embeds=embeds, view=view)
-    if post not in PANELS or post in ("verify", "tickets"):
+    if post not in PANELS or post == "tickets":
         try:
             await msg.pin()
         except discord.HTTPException:
@@ -534,54 +531,6 @@ async def setup_automod(guild):
             actions += alert
         await guild.create_automod_rule(name=name, event_type=discord.AutoModRuleEventType.message_send,
                                         trigger=trig, actions=actions, enabled=True, exempt_roles=exempt)
-
-
-# ═════════════════════════════════ Верификация ═════════════════════════════════
-
-NICK_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9_.\- ]{3,32}$")
-
-
-async def verify_member(inter: discord.Interaction, nick: str):
-    m, g = inter.user, inter.guild
-    nick = nick.strip()
-    if not NICK_RE.match(nick):
-        return await inter.response.send_message(
-            "Ник должен быть от 3 до 32 символов: буквы, цифры, `_`, `-`, точка.", ephemeral=True)
-    citizen, newbie = role(g, C.CITIZEN), role(g, C.NEWBIE)
-    already = citizen in m.roles
-    try:
-        await m.add_roles(citizen, reason=f"Верификация: {nick}")
-        if newbie in m.roles:
-            await m.remove_roles(newbie, reason="Верификация")
-    except discord.HTTPException:
-        return await inter.response.send_message("Не удалось выдать роль — сообщите администрации.", ephemeral=True)
-    try:
-        await m.edit(nick=nick, reason="Игровой ник")
-        renamed = ""
-    except discord.HTTPException:
-        renamed = "\n(Ник на сервере поменять не удалось — поменяй его сам.)"
-    await inter.response.send_message(f"✅ Готово, товарищ **{nick}**! Каналы открыты.{renamed}", ephemeral=True)
-    if not already and isinstance(ch := chan(g, C.CH_WELCOME), discord.TextChannel):
-        await ch.send(embeds=embeds_from(TX.WELCOME_CITIZEN, C.GOLD, user=m.mention, nick=nick))
-    await log(g, C.CH_SERVER_LOG, card("✅ Верификация", f"{m.mention} → ник **{nick}**", C.GREEN))
-
-
-class VerifyModal(discord.ui.Modal, title="Верификация"):
-    nick = discord.ui.TextInput(label="Игровой ник (точно как в игре)", placeholder="Ivan_Petrov",
-                                min_length=3, max_length=32)
-
-    async def on_submit(self, inter):
-        await verify_member(inter, str(self.nick))
-
-
-class VerifyView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Пройти верификацию", emoji="✅", style=discord.ButtonStyle.success,
-                       custom_id="verify:start")
-    async def start(self, inter, _):
-        await inter.response.send_modal(VerifyModal())
 
 
 # ═════════════════════════════════ Тикеты ═════════════════════════════════
@@ -714,8 +663,6 @@ class ApplyModal(discord.ui.Modal):
 
 def check_can_apply(inter, kind, target) -> str | None:
     m = inter.user
-    if not has_role(m, C.CITIZEN):
-        return "Сначала пройди верификацию."
     if kind == "org":
         f = C.FACTION_BY_KEY[target]
         if has_role(m, f["member"]):
@@ -852,11 +799,6 @@ def register_commands(tree: app_commands.CommandTree):
             await ch.send(text)
         except discord.HTTPException:
             pass
-
-    @tree.command(name="верификация", description="Указать игровой ник и получить роль «Гражданин»")
-    @app_commands.describe(ник="Игровой ник, точно как в игре")
-    async def verify_cmd(inter: discord.Interaction, ник: str):
-        await verify_member(inter, ник)
 
     # ── организации ──
     async def faction_guard(inter, org):
@@ -1049,7 +991,7 @@ def check_config():
                     errors.append(f"{k}: неизвестный post «{ch['post']}»")
         if len(cat["channels"]) > 50:
             errors.append(f"{cat['key']}: больше 50 каналов")
-    for k in [C.CH_SERVER_LOG, C.CH_PUNISH_LOG, C.CH_VERIFY, C.CH_WELCOME, C.CH_IDEAS, C.CH_ADMIN_COMPLAINTS,
+    for k in [C.CH_SERVER_LOG, C.CH_PUNISH_LOG, C.CH_WELCOME, C.CH_IDEAS, C.CH_ADMIN_COMPLAINTS,
               C.TICKET_CATEGORY, *C.CH_APPLY.values(), *[f"{f['key']}.hr" for f in C.FACTIONS]]:
         if k not in keys:
             errors.append(f"Нет канала {k}")
@@ -1118,14 +1060,13 @@ def docs():
         out.append("")
     out += ["## Тексты", ""]
     for name, blocks in [("#правила-сервера", TX.RULES_SERVER), ("#правила-игры", TX.RULES_GAME),
-                         ("#верификация", TX.VERIFY), ("#заявки-в-организации", TX.APPLY_ORG),
+                         ("#заявки-в-организации", TX.APPLY_ORG),
                          ("#баг-репорты", TX.BUGS), ("#жалобы-на-игроков", TX.COMPLAINTS),
                          ("#обжалование-наказаний", TX.APPEALS), ("#скачать-игру", TX.DOWNLOAD),
-                         ("Приветствие нового гражданина (#общий-чат)", TX.WELCOME_CITIZEN)]:
+                         ("Приветствие при входе (#общий-чат)", TX.WELCOME_CITIZEN)]:
         out.append(f"### {name}")
         for t, d in blocks:
             out += [f"**{t}**", "", d, ""]
-    out += ["### Приветствие при входе (#верификация, удаляется через 10 минут)", "", TX.WELCOME_JOIN, ""]
     return "\n".join(out)
 
 
