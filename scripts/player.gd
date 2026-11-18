@@ -73,7 +73,7 @@ func _ready() -> void:
 	_cs = cs
 
 	body = Humanoid.new()
-	body.model_path = "res://assets/character/character.glb"
+	body.model_path = "res://assets/characters/thug.glb"   # FBI agent
 	body.has_cap = true
 	body.cap_color = Color(0.85, 0.15, 0.12)
 	body.shirt_color = Color(0.93, 0.93, 0.9)
