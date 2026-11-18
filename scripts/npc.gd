@@ -1,26 +1,40 @@
 extends CharacterBody3D
-## Simple pedestrian: wanders, avoids walls and ledges, idles, reacts to being hit
-## (falls, gets up, runs away).
+## Pedestrian with a small behaviour state machine:
+## WALK (sidewalk-following, whisker steering, separation) / IDLE (phone, talk, look around)
+## FLEE (panic run) / COWER / FIGHT (tough guys hit back) / RAGDOLL / GETUP.
+## Reacts to fights and explosions around it (main.gd calls alarm()).
+
+enum S { WALK, IDLE, FLEE, COWER, FIGHT, RAGDOLL, GETUP }
 
 const GRAVITY := 22.0
+const MODEL := "res://assets/character/character.glb"
 
+var state := S.WALK
 var body: Humanoid
+var health := 100.0
+var personality := 0          # 0 flee, 1 coward (cower), 2 tough (fights back)
+var world: Node               # main.gd
+
 var _dir := Vector3.FORWARD
 var _speed := 1.3
-var _state_t := 0.0
-var _idle := false
-var _flee := 0.0
+var _timer := 0.0
+var _threat := Vector3.ZERO
+var _attack_cd := 0.0
+var _hit_done := false
 var _rng := RandomNumberGenerator.new()
+var _shape: CollisionShape3D
+var _stuck := 0.0
+var _last_pos := Vector3.ZERO
+var _level := 0.0              # ground height the walker sticks to (sidewalk level)
 
-const SHIRTS := [Color(0.7, 0.15, 0.15), Color(0.15, 0.3, 0.7), Color(0.85, 0.75, 0.2), Color(0.2, 0.2, 0.22),
-	Color(0.9, 0.9, 0.9), Color(0.4, 0.6, 0.3), Color(0.55, 0.3, 0.6), Color(0.95, 0.5, 0.2), Color(0.3, 0.55, 0.6)]
-const PANTS := [Color(0.15, 0.2, 0.35), Color(0.1, 0.1, 0.1), Color(0.45, 0.38, 0.28), Color(0.3, 0.3, 0.32), Color(0.25, 0.3, 0.2)]
-const SKINS := [Color(0.95, 0.78, 0.65), Color(0.8, 0.6, 0.45), Color(0.55, 0.38, 0.27), Color(0.35, 0.24, 0.17), Color(0.9, 0.7, 0.55)]
-const HAIR := [Color(0.06, 0.05, 0.05), Color(0.35, 0.22, 0.1), Color(0.75, 0.6, 0.3), Color(0.5, 0.5, 0.5)]
+const CLOTHES := [Color(1, 1, 1), Color(1.0, 0.7, 0.68), Color(0.7, 0.8, 1.0), Color(1.0, 0.92, 0.65),
+	Color(0.72, 1.0, 0.75), Color(0.85, 0.72, 1.0), Color(0.5, 0.5, 0.55), Color(1.0, 0.82, 0.6), Color(0.65, 0.95, 1.0)]
+const SKINS := [Color(1, 1, 1), Color(0.95, 0.9, 0.88), Color(0.8, 0.68, 0.6), Color(0.62, 0.5, 0.43), Color(0.48, 0.38, 0.33)]
 
 
 func _ready() -> void:
 	_rng.randomize()
+	add_to_group("npc")
 	collision_layer = 8
 	collision_mask = 1 | 2 | 4 | 8
 	floor_max_angle = deg_to_rad(50)
@@ -28,82 +42,269 @@ func _ready() -> void:
 	var shape := CapsuleShape3D.new()
 	shape.radius = 0.3
 	shape.height = 1.8
-	var cs := CollisionShape3D.new()
-	cs.shape = shape
-	cs.position.y = 0.9
-	add_child(cs)
+	_shape = CollisionShape3D.new()
+	_shape.shape = shape
+	_shape.position.y = 0.9
+	add_child(_shape)
+
 	body = Humanoid.new()
-	body.shirt_color = SHIRTS[_rng.randi() % SHIRTS.size()]
-	body.pants_color = PANTS[_rng.randi() % PANTS.size()]
-	body.skin_color = SKINS[_rng.randi() % SKINS.size()]
-	body.hair_color = HAIR[_rng.randi() % HAIR.size()]
-	body.has_cap = _rng.randf() < 0.25
-	body.cap_color = SHIRTS[_rng.randi() % SHIRTS.size()].darkened(0.3)
-	var s := _rng.randf_range(0.92, 1.06)
-	body.scale = Vector3(s, s, s)
+	body.model_path = MODEL
+	body.tint_clothes = CLOTHES[_rng.randi() % CLOTHES.size()]
+	body.tint_skin = SKINS[_rng.randi() % SKINS.size()]
+	body.model_height = _rng.randf_range(1.66, 1.92)
 	add_child(body)
-	_pick_dir()
+	var r := _rng.randf()
+	personality = 2 if r < 0.22 else (1 if r < 0.45 else 0)
+	_level = global_position.y
+	_start_walk()
 
 
-func _pick_dir() -> void:
+# ------------------------------------------------------------------ reactions
+## Something scary happened at `pos` (fight, explosion).
+func alarm(pos: Vector3, from_player: bool) -> void:
+	if state in [S.RAGDOLL, S.GETUP, S.FIGHT]:
+		return
+	_threat = pos
+	if personality == 2 and from_player and _rng.randf() < 0.5:
+		_start_fight()
+	elif personality == 1 and state != S.FLEE:
+		state = S.COWER
+		_timer = _rng.randf_range(3.0, 6.0)
+	else:
+		_start_flee()
+
+
+## Hit by the player (strength 1 = punch, 2 = kick / thrown object, 3 = heavy).
+func get_hit(from_dir: Vector3, strength := 1.0) -> void:
+	health -= 22.0 * strength
+	_threat = global_position - from_dir
+	if state == S.RAGDOLL:
+		if body.ragdoll:
+			body.ragdoll.push(from_dir * 120.0 * strength + Vector3.UP * 40.0)
+		return
+	var knock := strength >= 2.0 or health <= 0.0 or _rng.randf() < 0.35
+	if knock:
+		ragdoll(from_dir * (110.0 + 90.0 * strength) + Vector3.UP * (50.0 + 30.0 * strength))
+	else:
+		# stagger
+		velocity += from_dir.normalized() * 3.5
+		body.play_land(0.6)
+		if personality == 2:
+			_start_fight()
+	if world:
+		world.alarm(global_position, 14.0, true)
+
+
+func ragdoll(impulse: Vector3) -> void:
+	if state == S.RAGDOLL:
+		return
+	if body.start_ragdoll(velocity, impulse):
+		state = S.RAGDOLL
+		_shape.disabled = true
+		collision_layer = 0
+		velocity = Vector3.ZERO
+
+
+func is_down() -> bool:
+	return state == S.RAGDOLL or state == S.GETUP
+
+
+# ------------------------------------------------------------------ states
+func _start_walk() -> void:
+	state = S.WALK
+	body.pose_mode = ""
 	var a := _rng.randf() * TAU
 	_dir = Vector3(sin(a), 0, cos(a))
-	_state_t = _rng.randf_range(4.0, 10.0)
-	_idle = _rng.randf() < 0.2
-	_speed = _rng.randf_range(1.1, 1.6)
+	_timer = _rng.randf_range(8.0, 20.0)
+	_speed = _rng.randf_range(1.05, 1.55)
 
 
-func get_hit(from_dir: Vector3) -> void:
-	if body.knocked > 0.0:
-		return
-	body.knocked = 2.4
-	velocity = from_dir * 5.0 + Vector3.UP * 3.5
-	_dir = from_dir.normalized()
-	_flee = 0.0
+func _start_idle() -> void:
+	state = S.IDLE
+	_timer = _rng.randf_range(3.0, 9.0)
+	var r := _rng.randf()
+	body.pose_mode = "phone" if r < 0.35 else ("talk" if r < 0.6 else "")
+
+
+func _start_flee() -> void:
+	state = S.FLEE
+	body.pose_mode = "panic" if _rng.randf() < 0.6 else ""
+	_timer = _rng.randf_range(6.0, 10.0)
+	var away := global_position - _threat
+	away.y = 0.0
+	_dir = away.normalized() if away.length() > 0.1 else -_dir
+
+
+func _start_fight() -> void:
+	state = S.FIGHT
+	body.pose_mode = "guard"
+	_timer = 15.0
 
 
 func _physics_process(dt: float) -> void:
-	var space := get_world_3d().direct_space_state
-	_state_t -= dt
+	if state == S.RAGDOLL:
+		_update_ragdoll(dt)
+		return
+	_timer -= dt
+	_attack_cd -= dt
+	var player: Node3D = world.player if world else null
 	var target_speed := 0.0
+	var face_dir := _dir
+	body.look_point = null
 
+	match state:
+		S.WALK:
+			target_speed = _speed
+			_steer(dt, true)
+			if _timer <= 0.0:
+				if _rng.randf() < 0.45:
+					_start_idle()
+				else:
+					_start_walk()
+			_look_at_player(player, 5.0)
+		S.IDLE:
+			_look_at_player(player, 7.0)
+			if _timer <= 0.0:
+				_start_walk()
+		S.FLEE:
+			target_speed = 5.2
+			_steer(dt, false)
+			if _timer <= 0.0:
+				_start_walk()
+		S.COWER:
+			body.pose_mode = "cower"
+			face_dir = (_threat - global_position).normalized()
+			if _timer <= 0.0:
+				_start_flee()
+		S.FIGHT:
+			if player == null or player.global_position.distance_to(global_position) > 25.0 or _timer <= 0.0 or player.get("health") <= 0.0:
+				_start_walk()
+			else:
+				var to := player.global_position - global_position
+				to.y = 0.0
+				var d := to.length()
+				face_dir = to / maxf(d, 0.01)
+				_dir = face_dir
+				body.look_point = player.global_position + Vector3.UP * 1.6
+				if d > 1.2:
+					target_speed = 3.6 if d > 4.0 else 1.6
+				elif _attack_cd <= 0.0:
+					if body.play_attack() >= 0:
+						_attack_cd = _rng.randf_range(0.7, 1.3)
+						_hit_done = false
+				if body.is_attacking() and body.attack_hit_moment() and not _hit_done:
+					_hit_done = true
+					if d < 1.6 and player.has_method("take_hit"):
+						player.take_hit(face_dir, 7.0)
+		S.GETUP:
+			if body.knocked <= 0.0 and body._down < 0.15:
+				if health <= 0.0:
+					health = 60.0
+				if personality == 2 and _rng.randf() < 0.6:
+					_start_fight()
+				else:
+					_start_flee()
 	if body.knocked > 0.0:
 		body.knocked -= dt
-		if body.knocked <= 0.0:
-			_flee = 6.0
-	else:
-		if _flee > 0.0:
-			_flee -= dt
-			target_speed = 5.0
-		elif not _idle:
-			target_speed = _speed
-		if _state_t <= 0.0:
-			_pick_dir()
-		# obstacle / ledge check every frame (cheap rays)
-		if target_speed > 0.0:
-			var origin := global_position + Vector3(0, 1.0, 0)
-			var q := PhysicsRayQueryParameters3D.create(origin, origin + _dir * 1.4, 1 | 2 | 4 | 8, [get_rid()])
-			var blocked := not space.intersect_ray(q).is_empty()
-			var ahead := global_position + _dir * 1.2 + Vector3(0, 0.6, 0)
-			var q2 := PhysicsRayQueryParameters3D.create(ahead, ahead + Vector3(0, -1.8, 0), 1 | 2, [get_rid()])
-			var ground := space.intersect_ray(q2)
-			if blocked or ground.is_empty():
-				var a := atan2(_dir.x, _dir.z) + _rng.randf_range(PI * 0.5, PI * 1.5)
-				_dir = Vector3(sin(a), 0, cos(a))
+		target_speed = 0.0
 
 	var hv := Vector3(velocity.x, 0, velocity.z)
-	var k := 6.0 if is_on_floor() else 0.5
-	if body.knocked <= 0.0 or is_on_floor():
-		hv = hv.lerp(_dir * target_speed, 1.0 - exp(-k * dt))
+	hv = hv.lerp(_dir * target_speed, 1.0 - exp(-(6.0 if is_on_floor() else 0.6) * dt))
 	velocity.x = hv.x
 	velocity.z = hv.z
 	if not is_on_floor():
 		velocity.y -= GRAVITY * dt
 	var prev := body.rotation.y
-	if hv.length() > 0.2 and body.knocked <= 0.0:
-		body.rotation.y = lerp_angle(body.rotation.y, atan2(hv.x, hv.z), 1.0 - exp(-6.0 * dt))
+	if body.knocked <= 0.0:
+		var fd := hv if hv.length() > 0.3 else face_dir
+		if fd.length() > 0.01:
+			body.rotation.y = lerp_angle(body.rotation.y, atan2(fd.x, fd.z), 1.0 - exp(-7.0 * dt))
 	move_and_slide()
-	body.speed = hv.length() if body.knocked <= 0.0 else 0.0
+
+	# bumped hard by the sprinting player -> fall over
+	for i in get_slide_collision_count():
+		var c := get_slide_collision(i)
+		if c.get_collider() == player and player.velocity.length() > 6.5 and state != S.FIGHT:
+			ragdoll(player.velocity * 9.0 + Vector3.UP * 60.0)
+			return
+		var rb := c.get_collider() as RigidBody3D
+		if rb and rb.linear_velocity.length() > 5.0 and rb.mass > 1.0:
+			get_hit(rb.linear_velocity.normalized(), 2.0)
+			return
+
+	if is_on_floor() and state == S.WALK:
+		_level = lerpf(_level, global_position.y, 0.05)
+	body.speed = hv.length()
 	body.grounded = is_on_floor()
 	body.vertical_speed = velocity.y
 	body.turn_rate = wrapf(body.rotation.y - prev, -PI, PI) / maxf(dt, 0.0001)
+
+	# unstick
+	if target_speed > 0.5 and global_position.distance_to(_last_pos) < target_speed * dt * 0.2:
+		_stuck += dt
+		if _stuck > 0.8:
+			_stuck = 0.0
+			var a := atan2(_dir.x, _dir.z) + _rng.randf_range(PI * 0.6, PI * 1.4)
+			_dir = Vector3(sin(a), 0, cos(a))
+	else:
+		_stuck = 0.0
+	_last_pos = global_position
+
+
+func _update_ragdoll(dt: float) -> void:
+	var rd := body.ragdoll
+	if rd == null:
+		state = S.GETUP
+		return
+	# keep the (disabled) character with the body so culling / despawn work
+	global_position = rd.hips_position() - Vector3(0, 0.15, 0)
+	if rd.settled() or rd.age > 6.0:
+		var res := body.stop_ragdoll()
+		var p: Vector3 = res[0]
+		var space := get_world_3d().direct_space_state
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p + Vector3.UP, p + Vector3.DOWN * 3.0, 1 | 2))
+		global_position = (hit.position if not hit.is_empty() else p) + Vector3(0, 0.05, 0)
+		body.rotation.y = res[1]
+		_shape.disabled = false
+		collision_layer = 8
+		velocity = Vector3.ZERO
+		body.knocked = 4.0 if health <= 0.0 else _rng.randf_range(0.6, 1.4)
+		state = S.GETUP
+
+
+func _look_at_player(player: Node3D, dist: float) -> void:
+	if player and player.global_position.distance_to(global_position) < dist:
+		body.look_point = player.global_position + Vector3.UP * 1.6
+
+
+## Whisker steering + staying on the current ground level (sidewalks) + separation.
+func _steer(dt: float, keep_level: bool) -> void:
+	var space := get_world_3d().direct_space_state
+	var origin := global_position + Vector3(0, 0.9, 0)
+	var ex := [get_rid()]
+	var turn := 0.0
+	for side in [-0.5, 0.0, 0.5]:
+		var d := _dir.rotated(Vector3.UP, side)
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(origin, origin + d * (2.2 if side == 0.0 else 1.6), 1 | 2 | 8, ex))
+		if not hit.is_empty():
+			turn += (1.0 if side <= 0.0 else -1.0) * (1.6 if side == 0.0 else 1.0)
+	# ground ahead: avoid holes, and (when walking) stepping off the sidewalk
+	var ahead := global_position + _dir * 1.3 + Vector3(0, 0.8, 0)
+	var g := space.intersect_ray(PhysicsRayQueryParameters3D.create(ahead, ahead + Vector3.DOWN * 2.5, 1, ex))
+	var bad: bool = g.is_empty() or (g.position.y < global_position.y - 0.6)
+	if keep_level and not g.is_empty() and g.position.y < _level - 0.07 and _rng.randf() < 0.97:
+		bad = true
+	if bad:
+		turn += 2.5 if _rng.randf() < 0.5 else -2.5
+	# separation from other pedestrians
+	for o in get_tree().get_nodes_in_group("npc"):
+		if o == self:
+			continue
+		var off: Vector3 = global_position - (o as Node3D).global_position
+		off.y = 0.0
+		var l := off.length()
+		if l < 1.2 and l > 0.01:
+			var side_sign := signf(_dir.cross(off).y)
+			turn -= side_sign * (1.2 - l) * 2.0
+	if absf(turn) > 0.01:
+		_dir = _dir.rotated(Vector3.UP, clampf(turn, -3.0, 3.0) * dt * 2.2).normalized()

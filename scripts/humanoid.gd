@@ -17,6 +17,9 @@ class_name Humanoid
 ## instead of drawing the primitive "Part" body.
 @export var model_path := ""
 @export var model_height := 1.8
+## Multiplies the model's clothing / skin colours (variety for pedestrians).
+@export var tint_clothes := Color.WHITE
+@export var tint_skin := Color.WHITE
 
 # --- animation inputs (set by controller every frame) -------------------------
 var speed := 0.0            # horizontal speed m/s
@@ -25,6 +28,10 @@ var vertical_speed := 0.0
 var turn_rate := 0.0        # rad/s, for leaning
 var sprinting := false
 var knocked := 0.0          # >0 = lying on the ground (seconds left)
+## Upper-body pose override: "", "phone", "talk", "cower", "panic", "guard", "carry"
+var pose_mode := ""
+## World point to look at (head turn), or null
+var look_point = null
 
 # --- internal ---------------------------------------------------------------
 var _phase := 0.0
@@ -66,6 +73,9 @@ var _hips_bone := -1
 var _hips_rest_pos := Vector3.ZERO
 var _model_scale := 1.0
 var _fist := 0.0
+var _down_sign := 1.0
+var _pose_blend := 0.0
+var ragdoll: Ragdoll
 
 
 func _ready() -> void:
@@ -245,6 +255,8 @@ func _setup_model() -> void:
 				dup.alpha_scissor_threshold = 0.5
 				dup.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_OPAQUE_ONLY
 				dup.cull_mode = BaseMaterial3D.CULL_BACK
+				var is_skin := src.resource_name == "Material_1"
+				dup.albedo_color = src.albedo_color * (tint_skin if is_skin else tint_clothes)
 				fixed[src] = dup
 			m.set_surface_override_material(i, fixed[src])
 
@@ -305,6 +317,54 @@ func _apply_skeleton() -> void:
 		_skel.set_bone_pose_position(_hips_bone, _hips_rest_pos + off)
 
 
+# --- ragdoll -------------------------------------------------------------------------
+func is_ragdoll() -> bool:
+	return ragdoll != null
+
+
+## Switch to physics. `velocity` = current body velocity, `impulse` applied to the chest.
+func start_ragdoll(velocity: Vector3, impulse: Vector3) -> bool:
+	if _skel == null or ragdoll != null:
+		return false
+	ragdoll = Ragdoll.new()
+	var w := get_tree().get_first_node_in_group("world")
+	(w if w else get_tree().root).add_child(ragdoll)
+	var fwd := global_transform.basis.z
+	fwd.y = 0.0
+	ragdoll.setup(_skel, _bone, fwd.normalized(), velocity)
+	ragdoll.push(impulse, "chest")
+	return true
+
+
+## Back to animation. Returns [ground_pos, yaw] for the controller to place the body,
+## and starts a get-up from the lying pose.
+func stop_ragdoll() -> Array:
+	if ragdoll == null:
+		return [global_position, rotation.y]
+	var hp := ragdoll.hips_position()
+	var head_dir := ragdoll.head_position() - hp
+	head_dir.y = 0.0
+	if head_dir.length() < 0.01:
+		head_dir = Vector3.FORWARD
+	head_dir = head_dir.normalized()
+	var up := ragdoll.face_up()
+	ragdoll.queue_free()
+	ragdoll = null
+	_down_sign = 1.0 if up else -1.0
+	_down = 1.0
+	hips.rotation.x = -PI * 0.5 * _down_sign
+	hips.position.y = 0.16
+	knocked = 0.5
+	var fwd := -head_dir if up else head_dir
+	return [hp, atan2(fwd.x, fwd.z)]
+
+
+func _exit_tree() -> void:
+	if ragdoll and is_instance_valid(ragdoll):
+		ragdoll.queue_free()
+		ragdoll = null
+
+
 # --- public triggers -----------------------------------------------------------
 func play_land(impact: float) -> void:
 	_land = clampf(impact, 0.0, 1.0)
@@ -343,6 +403,9 @@ func _set_rot(n: Node3D, target: Vector3, k: float, dt: float) -> void:
 
 func _process(dt: float) -> void:
 	if hips == null:
+		return
+	if ragdoll:
+		ragdoll.apply_to_skeleton()
 		return
 	_t += dt
 	_land = maxf(0.0, _land - dt * 3.2)
@@ -452,6 +515,57 @@ func _process(dt: float) -> void:
 			head_r.x = 0.2 * fall_long
 		hip_y = HIP_H
 
+	# --- upper-body pose modes ---
+	var pm := pose_mode
+	if pm != "" and (grounded or pm == "carry" or pm == "panic"):
+		match pm:
+			"phone":
+				ra = Vector3(-0.45, 0.0, 0.5)
+				re = -2.55
+				head_r.z = -0.15
+			"talk":
+				var g := sin(_t * 2.3)
+				la = Vector3(-0.55 + 0.25 * g, 0.0, -0.3)
+				le = -1.35 - 0.3 * g
+				ra = Vector3(-0.45 - 0.25 * sin(_t * 1.7 + 1.0), 0.0, 0.25)
+				re = -1.2 - 0.2 * sin(_t * 2.9)
+				head_r.x += sin(_t * 1.3) * 0.08
+			"cower":
+				hip_y = HIP_H - 0.45
+				lf.x = -1.35
+				rf.x = -1.35
+				lk = 2.3
+				rk = 2.3
+				spine_r.x = 0.8
+				la = Vector3(-2.4, 0.0, -0.45)
+				ra = Vector3(-2.4, 0.0, 0.45)
+				le = -2.3
+				re = -2.3
+				head_r = Vector3(0.45, 0.0, 0.0)
+			"panic":
+				la = Vector3(-2.5 + sin(_t * 11.0) * 0.45, 0.0, -0.55)
+				ra = Vector3(-2.5 + cos(_t * 11.0) * 0.45, 0.0, 0.55)
+				le = -0.7
+				re = -0.7
+				head_r.x = -0.2
+			"guard":
+				la = Vector3(-0.95, 0.0, -0.25)
+				ra = Vector3(-0.8, 0.0, 0.25)
+				le = -2.15
+				re = -2.25
+				spine_r.x += 0.12
+				hip_y -= 0.04
+			"carry":
+				la = Vector3(-2.85, 0.0, -0.18)
+				ra = Vector3(-2.85, 0.0, 0.18)
+				le = -0.4
+				re = -0.4
+	if look_point != null and _down < 0.2:
+		var lp: Vector3 = to_local(look_point)
+		var yaw := clampf(atan2(lp.x, lp.z), -1.2, 1.2)
+		head_r.y = yaw * 0.8
+		chest_r.y += yaw * 0.2
+
 	# --- attacks override upper body (and leg for kick) ---
 	if _attack > 0.0:
 		var dur := 0.42 if _attack_kind < 2 else 0.55
@@ -501,7 +615,7 @@ func _process(dt: float) -> void:
 	hips.position.y = _damp(hips.position.y, hip_y, 18.0, dt)
 	hips.position.x = _damp(hips.position.x, _shift * 0.025, 8.0, dt)
 	# lying on the back: rotate whole hips
-	hips.rotation.x = _damp(hips.rotation.x, -PI * 0.5 * _down, 10.0, dt)
+	hips.rotation.x = _damp(hips.rotation.x, -PI * 0.5 * _down * _down_sign, 10.0, dt)
 	_set_rot(spine, spine_r, k, dt)
 	_set_rot(chest, chest_r, k, dt)
 	_set_rot(head, head_r, 8.0, dt)

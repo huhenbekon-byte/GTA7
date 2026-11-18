@@ -140,7 +140,7 @@ static func _static() -> StaticBody3D:
 static func _rigid(mass: float) -> RigidBody3D:
 	var b := RigidBody3D.new()
 	b.collision_layer = L_PROPS
-	b.collision_mask = L_WORLD | L_PROPS | 4 | 8
+	b.collision_mask = L_WORLD | L_PROPS | 4 | 8 | 16
 	b.mass = mass
 	b.can_sleep = true
 	b.sleeping = true
@@ -350,11 +350,24 @@ static func crate(rng: RandomNumberGenerator) -> Node3D:
 
 static func barrel(rng: RandomNumberGenerator) -> Node3D:
 	var b := _rigid(25.0)
-	var c: Color = [Color(0.1, 0.3, 0.6), Color(0.7, 0.12, 0.08), Color(0.2, 0.4, 0.2), Color(0.85, 0.65, 0.1)][rng.randi() % 4]
+	var explosive := rng.randf() < 0.4
+	var c: Color = Color(0.78, 0.1, 0.06) if explosive else [Color(0.1, 0.3, 0.6), Color(0.2, 0.4, 0.2), Color(0.85, 0.65, 0.1)][rng.randi() % 3]
 	var mt := m(c, 0.5, 0.4)
 	vis(b, cyl(0.3, 0.3, 0.9, 14), mt, Vector3(0, 0.45, 0))
 	for y in [0.2, 0.7]:
 		vis(b, cyl(0.31, 0.31, 0.04, 14), m(c.darkened(0.3), 0.4, 0.5), Vector3(0, y, 0), Vector3.ZERO, false)
+	if explosive:
+		# hazard label + explodes on hard impacts
+		vis(b, cyl(0.305, 0.305, 0.22, 14), m(Color(0.95, 0.8, 0.1), 0.5), Vector3(0, 0.45, 0), Vector3.ZERO, false)
+		vis(b, box(0.16, 0.16, 0.02), m(Color(0.05, 0.05, 0.05)), Vector3(0, 0.45, 0.305), Vector3(0, 0, PI / 4), false)
+		b.add_to_group("explosive")
+		b.contact_monitor = true
+		b.max_contacts_reported = 2
+		b.body_entered.connect(func(_o: Node):
+			if b.linear_velocity.length() > 8.0 and b.is_inside_tree():
+				var w := b.get_tree().get_first_node_in_group("world")
+				if w and w.has_method("ignite"):
+					w.ignite(b, 0.05))
 	col_cyl(b, 0.3, 0.9, Vector3(0, 0.45, 0))
 	return b
 

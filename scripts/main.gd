@@ -14,7 +14,7 @@ const MAP_SIZE := 2450.0
 const DAY_LENGTH := 840.0     # seconds for 24h
 const CHUNK := 40.0
 const CHUNK_RADIUS := 2
-const NPC_COUNT := 12
+const NPC_COUNT := 14
 const LIGHT_POOL := 6
 
 const SPAWN_HINT := Vector3(532, 0, -901)
@@ -53,6 +53,7 @@ var _audio_pb: AudioStreamGeneratorPlayback
 var _brown := 0.0
 var _brown2 := 0.0
 var _ready_done := false
+var _boom := 0.0
 
 const PROP_WEIGHTS := {
 	"lamp": 10, "tree": 7, "bench": 5, "hydrant": 5, "booth": 2, "dumpster": 3, "busstop": 2,
@@ -61,6 +62,7 @@ const PROP_WEIGHTS := {
 
 
 func _ready() -> void:
+	add_to_group("world")
 	_rng.randomize()
 	_setup_environment()
 	var city: Node3D = load("res://assets/city/city.glb").instantiate()
@@ -85,6 +87,7 @@ func _ready() -> void:
 
 	player = CharacterBody3D.new()
 	player.set_script(PlayerScript)
+	player.set("world", self)
 	add_child(player)
 	player.global_position = SPAWN_HINT + Vector3(0, 30, 0)  # temporary until physics is ready
 
@@ -444,7 +447,8 @@ func _fill_audio() -> void:
 		var w := randf() * 2.0 - 1.0
 		_brown = clampf(_brown + w * 0.02, -1.0, 1.0) * 0.998   # deep city/wind rumble
 		_brown2 = lerpf(_brown2, w, 0.35)                        # brighter hiss for rain
-		var v := _brown * wind * 3.0 + _brown2 * rain_amt * 0.12
+		_boom = maxf(0.0, _boom - 1.0 / 22050.0 * 1.4)
+		var v := _brown * wind * 3.0 + _brown2 * rain_amt * 0.12 + (_brown * 6.0 + w * 0.5) * _boom * _boom * 0.6
 		_audio_pb.push_frame(Vector2(v, v))
 
 
@@ -538,7 +542,7 @@ func _manage_npcs() -> void:
 	for n in _npcs.duplicate():
 		if not is_instance_valid(n):
 			_npcs.erase(n)
-		elif n.global_position.distance_to(pp) > 95.0 or n.global_position.y < -8.0:
+		elif (n.global_position.distance_to(pp) > 95.0 and not n.is_down()) or n.global_position.y < -8.0:
 			n.queue_free()
 			_npcs.erase(n)
 	if _npcs.size() < NPC_COUNT and Engine.get_physics_frames() % 10 == 0:
@@ -552,6 +556,7 @@ func _manage_npcs() -> void:
 			return
 		var npc := CharacterBody3D.new()
 		npc.set_script(NpcScript)
+		npc.set("world", self)
 		add_child(npc)
 		npc.global_position = hit.position + Vector3(0, 0.1, 0)
 		_npcs.append(npc)
@@ -667,3 +672,156 @@ func _try_put_car(space: PhysicsDirectSpaceState3D, root: Node3D, tmpl: Node3D, 
 	car.global_position = Vector3(pos.x, y0 + 0.01, pos.z)
 	car.rotation.y = yaw
 	return true
+
+
+# ------------------------------------------------------------------ reactions / explosions
+## Tell pedestrians around `pos` that something scary happened.
+func alarm(pos: Vector3, radius: float, from_player: bool) -> void:
+	for n in get_tree().get_nodes_in_group("npc"):
+		if (n as Node3D).global_position.distance_to(pos) < radius:
+			n.alarm(pos, from_player)
+
+
+## Light the fuse of an explosive barrel.
+func ignite(barrel: Node3D, fuse := 1.6) -> void:
+	if not is_instance_valid(barrel) or barrel.has_meta("lit"):
+		return
+	barrel.set_meta("lit", true)
+	var fire := CPUParticles3D.new()
+	fire.amount = 24
+	fire.lifetime = 0.5
+	fire.emission_shape = CPUParticles3D.EMISSION_SHAPE_SPHERE
+	fire.emission_sphere_radius = 0.15
+	fire.direction = Vector3.UP
+	fire.spread = 20.0
+	fire.initial_velocity_min = 1.0
+	fire.initial_velocity_max = 2.2
+	fire.gravity = Vector3(0, 2, 0)
+	fire.scale_amount_min = 0.6
+	fire.scale_amount_max = 1.2
+	fire.color = Color(1.0, 0.55, 0.15)
+	var q := QuadMesh.new()
+	q.size = Vector2(0.25, 0.25)
+	var fm := StandardMaterial3D.new()
+	fm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	fm.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	fm.vertex_color_use_as_albedo = true
+	fm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	fm.billboard_keep_scale = true
+	fm.albedo_texture = _soft_particle_tex()
+	q.material = fm
+	fire.mesh = q
+	fire.position = Vector3(0, 0.95, 0)
+	barrel.add_child(fire)
+	get_tree().create_timer(fuse).timeout.connect(func():
+		if is_instance_valid(barrel):
+			explode(barrel.global_position + Vector3(0, 0.5, 0))
+			barrel.queue_free())
+
+
+var _soft_tex: GradientTexture2D
+
+func _soft_particle_tex() -> GradientTexture2D:
+	if _soft_tex == null:
+		var g := Gradient.new()
+		g.set_color(0, Color(1, 1, 1, 1))
+		g.set_color(1, Color(1, 1, 1, 0))
+		g.add_point(0.45, Color(1, 1, 1, 0.75))
+		_soft_tex = GradientTexture2D.new()
+		_soft_tex.gradient = g
+		_soft_tex.fill = GradientTexture2D.FILL_RADIAL
+		_soft_tex.fill_from = Vector2(0.5, 0.5)
+		_soft_tex.fill_to = Vector2(0.5, 0.0)
+		_soft_tex.width = 64
+		_soft_tex.height = 64
+	return _soft_tex
+
+
+func explode(pos: Vector3) -> void:
+	_boom = 1.0
+	# flash
+	var l := OmniLight3D.new()
+	l.light_color = Color(1.0, 0.6, 0.25)
+	l.omni_range = 18.0
+	l.light_energy = 6.0
+	add_child(l)
+	l.global_position = pos + Vector3.UP
+	var tw := create_tween()
+	tw.tween_property(l, "light_energy", 0.0, 0.7)
+	tw.tween_callback(l.queue_free)
+	# fireball + smoke + debris
+	for spec in [[Color(1.0, 0.55, 0.1), 40, 0.6, 7.0, 1.6], [Color(0.25, 0.23, 0.22), 30, 2.2, 2.5, 3.0], [Color(0.3, 0.2, 0.15), 24, 1.4, 11.0, 0.35]]:
+		var p := CPUParticles3D.new()
+		p.one_shot = true
+		p.explosiveness = 0.95
+		p.amount = spec[1]
+		p.lifetime = spec[2]
+		p.direction = Vector3.UP
+		p.spread = 180.0
+		p.initial_velocity_min = float(spec[3]) * 0.4
+		p.initial_velocity_max = spec[3]
+		p.gravity = Vector3(0, -9.8, 0) if spec[4] < 1.0 else Vector3(0, 1.5, 0)
+		p.damping_min = 1.0
+		p.damping_max = 3.0
+		p.scale_amount_min = float(spec[4]) * 0.5
+		p.scale_amount_max = spec[4]
+		p.color = spec[0]
+		var ramp := Gradient.new()
+		ramp.set_color(0, Color(1, 1, 1, 1))
+		ramp.set_color(1, Color(1, 1, 1, 0))
+		p.color_ramp = ramp
+		var q: PrimitiveMesh
+		if spec[4] >= 1.0:
+			q = QuadMesh.new()
+		else:
+			q = BoxMesh.new()
+		if q is QuadMesh:
+			(q as QuadMesh).size = Vector2(0.6, 0.6)
+		else:
+			(q as BoxMesh).size = Vector3(0.12, 0.12, 0.12)
+		var m := StandardMaterial3D.new()
+		m.vertex_color_use_as_albedo = true
+		if q is QuadMesh:
+			m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+			m.billboard_keep_scale = true
+			m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			m.albedo_texture = _soft_particle_tex()
+			m.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_DISABLED
+		q.material = m
+		p.mesh = q
+		add_child(p)
+		p.global_position = pos
+		p.emitting = true
+		get_tree().create_timer(4.0).timeout.connect(p.queue_free)
+	# blast
+	var space := get_world_3d().direct_space_state
+	var qp := PhysicsShapeQueryParameters3D.new()
+	var sph := SphereShape3D.new()
+	sph.radius = 8.0
+	qp.shape = sph
+	qp.transform = Transform3D(Basis(), pos)
+	qp.collision_mask = 2 | 8
+	for r in space.intersect_shape(qp, 64):
+		var o: Node3D = r.collider
+		var d := o.global_position - pos
+		var f := clampf(1.0 - d.length() / 8.0, 0.0, 1.0)
+		var dir := (d + Vector3.UP * 0.8).normalized()
+		if o is RigidBody3D:
+			var rb := o as RigidBody3D
+			if rb.freeze:
+				continue
+			rb.apply_central_impulse(dir * 16.0 * f * minf(rb.mass, 60.0))
+			rb.angular_velocity += Vector3(randf_range(-8, 8), randf_range(-8, 8), randf_range(-8, 8)) * f
+			if rb.is_in_group("explosive") and f > 0.3:
+				ignite(rb, randf_range(0.2, 0.5))
+		elif o.has_method("ragdoll") and f > 0.0:
+			o.health -= 90.0 * f
+			o.ragdoll(dir * 900.0 * f + Vector3.UP * 300.0 * f)
+	var pd := player.global_position.distance_to(pos)
+	if pd < 7.0:
+		var f := 1.0 - pd / 7.0
+		player.health -= 70.0 * f
+		player.knockdown(((player.global_position - pos) + Vector3.UP).normalized() * 700.0 * f)
+	player.set("_shake", maxf(player.get("_shake"), clampf(1.0 - pd / 40.0, 0.0, 0.8)))
+	alarm(pos, 40.0, false)

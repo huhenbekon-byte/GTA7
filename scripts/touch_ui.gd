@@ -49,6 +49,7 @@ func _layout() -> void:
 		"jump": {"pos": Vector2(s.x - 110 * u, s.y - 120 * u), "r": 58.0 * u, "label": "ПРЫЖОК"},
 		"punch": {"pos": Vector2(s.x - 240 * u, s.y - 85 * u), "r": 52.0 * u, "label": "УДАР"},
 		"sprint": {"pos": Vector2(s.x - 115 * u, s.y - 260 * u), "r": 50.0 * u, "label": "БЕГ"},
+		"grab": {"pos": Vector2(s.x - 250 * u, s.y - 215 * u), "r": 46.0 * u, "label": "ВЗЯТЬ"},
 	}
 	minimap.size = Vector2(210, 210) * u
 	minimap.position = Vector2(24 * u, 24 * u)
@@ -80,6 +81,8 @@ func _press(btn: String, down: bool) -> void:
 			if down: player.attack_pressed = true
 		"sprint":
 			player.sprint_held = down
+		"grab":
+			if down: player.grab_pressed = true
 
 
 func _input(e: InputEvent) -> void:
@@ -155,6 +158,8 @@ func _draw() -> void:
 		draw_arc(hint, JOY_R * 0.8, 0, TAU, 48, Color(1, 1, 1, 0.18), 2.0)
 		draw_circle(hint, 30, Color(1, 1, 1, 0.15))
 	# buttons
+	if player and _buttons.has("grab"):
+		_buttons.grab.label = "БРОСИТЬ" if player.held else "ВЗЯТЬ"
 	for n in _buttons:
 		var b: Dictionary = _buttons[n]
 		var pressed: bool = n in _btn_touch.values()
