@@ -38,6 +38,19 @@ static func random_car(rng: RandomNumberGenerator) -> Node3D:
 	return _car_templates[rng.randi() % _car_templates.size()]
 
 
+static var _all_cars := {}
+
+## A specific car template by node name (e.g. "Car_0", the police jeep).
+static func car_template(name: String) -> Node3D:
+	if _all_cars.is_empty():
+		var lib: Node = (load("res://assets/cars/cars.glb") as PackedScene).instantiate()
+		for c in lib.get_children():
+			lib.remove_child(c)
+			_all_cars[str(c.name)] = c
+		lib.free()
+	return _all_cars.get(name)
+
+
 static func car_from(tmpl: Node3D, size: Vector3) -> Node3D:
 	var b := _breakable(1200.0)
 	b.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM

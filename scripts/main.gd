@@ -6,6 +6,8 @@ const PlayerScript := preload("res://scripts/player.gd")
 const NpcScript := preload("res://scripts/npc.gd")
 const TouchUI := preload("res://scripts/touch_ui.gd")
 const VehicleScript := preload("res://scripts/vehicle.gd")
+const Mission1Script := preload("res://scripts/mission1.gd")
+const SAVE_PATH := "user://save.cfg"
 
 # minimap covers this square of the world (must match tools/render_minimap.gd)
 const MAP_X0 := -495.0
@@ -55,6 +57,11 @@ var _brown := 0.0
 var _brown2 := 0.0
 var _ready_done := false
 var _boom := 0.0
+var _bang := 0.0
+var money := 0
+var missions_done := {}
+var mission: Node = null
+var _mission_timer := 4.0
 var _vehicles: Array[Node] = []
 var _engine_phase := 0.0
 var _engine_sub := 0.0
@@ -63,6 +70,7 @@ var _engine_sub := 0.0
 
 func _ready() -> void:
 	add_to_group("world")
+	_load_game()
 	_rng.randomize()
 	_setup_environment()
 	var city: Node3D = load("res://assets/city/city.glb").instantiate()
@@ -288,6 +296,13 @@ func _physics_process(_dt: float) -> void:
 		ui.show_message("Добро пожаловать в город", 3.0)
 	_stream_chunks()
 	_manage_npcs()
+	if mission == null and not missions_done.has("m1"):
+		_mission_timer -= _dt
+		if _mission_timer <= 0.0:
+			mission = Node.new()
+			mission.set_script(Mission1Script)
+			mission.set("world", self)
+			add_child(mission)
 
 
 func _process(dt: float) -> void:
@@ -456,7 +471,8 @@ func _fill_audio() -> void:
 		_brown = clampf(_brown + w * 0.02, -1.0, 1.0) * 0.998   # deep city/wind rumble
 		_brown2 = lerpf(_brown2, w, 0.35)                        # brighter hiss for rain
 		_boom = maxf(0.0, _boom - 1.0 / 22050.0 * 1.4)
-		var v := _brown * wind * 3.0 + _brown2 * rain_amt * 0.12 + (_brown * 6.0 + w * 0.5) * _boom * _boom * 0.6
+		_bang = maxf(0.0, _bang - 1.0 / 22050.0 * 9.0)
+		var v := _brown * wind * 3.0 + _brown2 * rain_amt * 0.12 + (_brown * 6.0 + w * 0.5) * _boom * _boom * 0.6 + (w * 0.9 + _brown * 3.0) * _bang * _bang * 0.8
 		if eng_amp > 0.0:
 			_engine_phase = fmod(_engine_phase + eng_freq / 22050.0, 1.0)
 			_engine_sub = fmod(_engine_sub + eng_freq * 0.5 / 22050.0, 1.0)
@@ -1170,3 +1186,55 @@ func _place_roof_details(root: Node3D, rng: RandomNumberGenerator, k: Vector2i, 
 		node.global_position = Vector3(p.x, y, p.z)
 		node.rotation.y = rng.randf() * TAU
 		placed += 1
+
+
+# ------------------------------------------------------------------ economy / save
+func bang(volume := 1.0) -> void:
+	_bang = maxf(_bang, clampf(volume, 0.0, 1.0))
+
+
+func add_money(amount: int) -> void:
+	money += amount
+	save_game()
+
+
+func save_game() -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("player", "money", money)
+	cf.set_value("player", "missions", missions_done.keys())
+	cf.save(SAVE_PATH)
+
+
+func _load_game() -> void:
+	var cf := ConfigFile.new()
+	if cf.load(SAVE_PATH) != OK:
+		return
+	money = int(cf.get_value("player", "money", 0))
+	for k in cf.get_value("player", "missions", []):
+		missions_done[k] = true
+
+
+## A flat, free spot near `center` (on the road or off it), or null.
+func find_spot(center: Vector3, radius: float, on_road: bool, half := Vector3(0.4, 0.9, 0.4), tries := 80):
+	var space := get_world_3d().direct_space_state
+	for i in tries:
+		var a := _rng.randf() * TAU
+		var r := sqrt(_rng.randf()) * radius
+		var p := center + Vector3(cos(a) * r, 0, sin(a) * r)
+		var h := _ground(space, p, center.y + 6.0, center.y - 6.0)
+		if h.is_empty() or h.normal.y < 0.95 or is_road_hit(h) != on_road:
+			continue
+		if _clear(h.position, half):
+			return h.position
+	return null
+
+
+## Spawns a specific parked car model at `pos` facing `yaw`.
+func spawn_car(model: String, pos: Vector3, yaw: float) -> Node3D:
+	var tmpl := Props.car_template(model)
+	var size: Vector3 = tmpl.get_meta("size")
+	var car := Props.car_from(tmpl, size)
+	add_child(car)
+	car.global_position = pos + Vector3.UP * 0.02
+	car.rotation.y = yaw
+	return car

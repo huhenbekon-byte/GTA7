@@ -21,6 +21,15 @@ var jump_pressed := false
 var attack_pressed := false
 var grab_pressed := false
 var jump_held := false
+var fire_held := false
+var input_locked := false
+var has_rifle := false
+var rifle_node: Node3D
+var mag := 30
+var _fire_cd := 0.0
+var _reload := 0.0
+var _aim_timer := 0.0
+var aim_target: Node3D = null
 var vehicle: VehicleBody3D = null
 var world: Node
 var held: RigidBody3D
@@ -122,6 +131,14 @@ func _physics_process(dt: float) -> void:
 	var sprint := sprint_held or Input.is_physical_key_pressed(KEY_SHIFT)
 	if Input.is_physical_key_pressed(KEY_SPACE):
 		jump_pressed = true
+	var firing := has_rifle and held == null and (fire_held or Input.is_physical_key_pressed(KEY_G) or (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)))
+	if input_locked:
+		inp = Vector2.ZERO
+		sprint = false
+		jump_pressed = false
+		attack_pressed = false
+		grab_pressed = false
+		firing = false
 
 	var knocked := body.knocked > 0.0
 	if knocked:
@@ -141,6 +158,8 @@ func _physics_process(dt: float) -> void:
 		dir = dir.normalized()
 	if body.is_attacking() and is_on_floor():
 		target_speed *= 0.25
+	if firing or _aim_timer > 0.0:
+		target_speed = minf(target_speed, JOG * 0.7)
 
 	var hv := Vector3(velocity.x, 0, velocity.z)
 	var accel := ACCEL if is_on_floor() else AIR_ACCEL
@@ -148,7 +167,24 @@ func _physics_process(dt: float) -> void:
 
 	# --- facing ---
 	var prev_yaw := body.rotation.y
-	if hv.length() > 0.3 and not knocked:
+	_fire_cd -= dt
+	_reload -= dt
+	if firing and not knocked:
+		_aim_timer = 0.7
+		var aim := _aim_dir()
+		body.rotation.y = lerp_angle(body.rotation.y, atan2(aim.x, aim.z), 1.0 - exp(-22.0 * dt))
+		if _reload <= 0.0 and _fire_cd <= 0.0:
+			_fire_once(aim)
+	_aim_timer -= dt
+	if held:
+		body.pose_mode = "carry"
+	elif _aim_timer > 0.0 and has_rifle:
+		body.pose_mode = "aim_rifle"
+	elif body.pose_mode in ["aim_rifle", "carry"]:
+		body.pose_mode = ""
+	if _aim_timer > 0.0 and not knocked:
+		pass
+	elif hv.length() > 0.3 and not knocked:
 		var want := atan2(hv.x, hv.z)
 		body.rotation.y = lerp_angle(body.rotation.y, want, 1.0 - exp(-TURN_SPEED * dt))
 	elif body.is_attacking():
@@ -182,7 +218,14 @@ func _physics_process(dt: float) -> void:
 		if held:
 			_throw()
 		elif not knocked:
+			if world and world.get("mission") != null and world.mission.has_method("on_action") and world.mission.on_action():
+				_e_down = e
+				grab_pressed = false
+				return
 			var car: Node3D = world.nearest_car(global_position) if world else null
+			if car and world.get("mission") != null and world.mission.has_method("blocks_vehicle") and world.mission.blocks_vehicle():
+				world.ui.show_message("Сначала доведи хулигана пешком", 2.0)
+				car = null
 			if car:
 				_enter_vehicle(car)
 				_e_down = e
@@ -257,6 +300,14 @@ func _physics_process(dt: float) -> void:
 
 
 func _process(dt: float) -> void:
+	if rifle_node:
+		rifle_node.visible = vehicle == null and not body.is_ragdoll() and held == null
+		if _aim_timer > 0.0:
+			rifle_node.position = Vector3(-0.12, 0.16, 0.3)
+			rifle_node.rotation = Vector3(0.0, 0.0, 0.0)
+		else:
+			rifle_node.position = Vector3(0.02, 0.08, -0.17)
+			rifle_node.rotation = Vector3(-1.25, 0.0, 0.7)
 	if vehicle:
 		_vehicle_camera(dt)
 		return
@@ -572,3 +623,82 @@ func _vehicle_camera(dt: float) -> void:
 	_shake = maxf(0.0, _shake - dt)
 	camera.h_offset = randf_range(-1, 1) * _shake * 0.3
 	camera.v_offset = randf_range(-1, 1) * _shake * 0.3 + (randf_range(-1, 1) * 0.015 * clampf(spd / 40.0, 0, 1) if v.nitro else 0.0)
+
+
+# ------------------------------------------------------------------ weapon
+func give_rifle() -> void:
+	if has_rifle:
+		return
+	has_rifle = true
+	rifle_node = Weapons.rifle()
+	body.chest.add_child(rifle_node)
+	mag = 30
+
+
+## Aim direction: soft auto-aim to the best target near the camera's centre, else straight.
+func _aim_dir() -> Vector3:
+	var cf := -camera.global_transform.basis.z
+	var flat := Vector3(cf.x, 0, cf.z).normalized()
+	aim_target = null
+	var best := 0.0
+	var from := global_position + Vector3.UP * 1.4
+	var space := get_world_3d().direct_space_state
+	for n in get_tree().get_nodes_in_group("npc"):
+		var t := n as Node3D
+		if t.get("state") == 5 or t.get("no_react") == true and t.get("label") == "Петров":   # ragdolled / the officer
+			continue
+		var p := t.global_position + Vector3.UP * 1.2
+		var d := p - from
+		var dist := d.length()
+		if dist > 55.0 or dist < 0.5:
+			continue
+		var c := Vector3(d.x, 0, d.z).normalized().dot(flat)
+		if c < 0.88:
+			continue
+		var score := c - dist * 0.002 + (0.2 if t.is_in_group("aim_priority") else 0.0)
+		if score > best:
+			var los := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, p, 1 | 32, [get_rid()]))
+			if los.is_empty():
+				best = score
+				aim_target = t
+	if aim_target:
+		return ((aim_target.global_position + Vector3.UP * 1.2) - from).normalized()
+	return Vector3(cf.x, clampf(cf.y + 0.12, -0.5, 0.5), cf.z).normalized()
+
+
+func _fire_once(dir: Vector3) -> void:
+	_fire_cd = 0.1
+	mag -= 1
+	if mag <= 0:
+		mag = 30
+		_reload = 1.6
+		if world:
+			world.ui.show_message("Перезарядка", 1.0)
+	var spread := Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * 0.012
+	var d := (dir + spread).normalized()
+	var from := global_position + Vector3.UP * 1.4
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(from, from + d * 140.0, 1 | 2 | 8 | 16 | 32, [get_rid()])
+	var hit := space.intersect_ray(q)
+	var to: Vector3 = from + d * 140.0
+	var flesh := false
+	if not hit.is_empty():
+		to = hit.position
+		var o: Object = hit.collider
+		if o.has_method("get_hit"):
+			o.get_hit(d, 1.3)
+			flesh = true
+		elif o is RigidBody3D:
+			var rb := o as RigidBody3D
+			flesh = rb.collision_layer == 16
+			if not rb.freeze:
+				rb.apply_impulse(d * clampf(rb.mass * 0.6, 1.0, 40.0), hit.position - rb.global_position)
+			if rb.is_in_group("explosive") and world:
+				world.ignite(rb, 0.05)
+	var muzzle: Vector3 = rifle_node.get_node("Muzzle").global_position if rifle_node else from
+	Weapons.shot_fx(get_parent(), muzzle, to, not hit.is_empty(), flesh)
+	_shake = maxf(_shake, 0.05)
+	cam_pitch = clampf(cam_pitch + 0.004, -1.25, 0.6)
+	if world:
+		world.bang(1.0)
+		world.alarm(global_position, 30.0, true)

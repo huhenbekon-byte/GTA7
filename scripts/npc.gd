@@ -15,6 +15,17 @@ var health := 100.0
 var personality := 0          # 0 flee, 1 coward (cower), 2 tough (fights back)
 var world: Node               # main.gd
 
+# --- scripted / mission control ---
+var persistent := false        # never despawned by the crowd manager
+var no_react := false          # ignores alarms (police officer, scripted actors)
+var scripted := false          # movement driven by a mission script
+var script_target = null       # Vector3 to walk to, or null
+var script_speed := 1.4
+var script_face = null         # Vector3 to face when standing
+var preset_clothes := Color(0, 0, 0, 0)
+var preset_skin := Color(0, 0, 0, 0)
+var label := ""                # shown above the head (mission actors)
+
 var _dir := Vector3.FORWARD
 var _speed := 1.3
 var _timer := 0.0
@@ -49,8 +60,8 @@ func _ready() -> void:
 
 	body = Humanoid.new()
 	body.model_path = MODEL
-	body.tint_clothes = CLOTHES[_rng.randi() % CLOTHES.size()]
-	body.tint_skin = SKINS[_rng.randi() % SKINS.size()]
+	body.tint_clothes = preset_clothes if preset_clothes.a > 0.0 else CLOTHES[_rng.randi() % CLOTHES.size()]
+	body.tint_skin = preset_skin if preset_skin.a > 0.0 else SKINS[_rng.randi() % SKINS.size()]
 	body.model_height = _rng.randf_range(1.66, 1.92)
 	add_child(body)
 	var r := _rng.randf()
@@ -62,6 +73,8 @@ func _ready() -> void:
 # ------------------------------------------------------------------ reactions
 ## Something scary happened at `pos` (fight, explosion).
 func alarm(pos: Vector3, from_player: bool) -> void:
+	if no_react or scripted:
+		return
 	if state in [S.RAGDOLL, S.GETUP, S.FIGHT]:
 		return
 	_threat = pos
@@ -152,58 +165,82 @@ func _physics_process(dt: float) -> void:
 	var face_dir := _dir
 	body.look_point = null
 
-	match state:
-		S.WALK:
-			target_speed = _speed
-			_steer(dt, true)
-			if _timer <= 0.0:
-				if _rng.randf() < 0.45:
-					_start_idle()
-				else:
+	if scripted and state in [S.WALK, S.IDLE, S.FLEE, S.COWER, S.FIGHT]:
+		state = S.WALK
+		body.look_point = script_face
+		if script_target != null:
+			var to: Vector3 = script_target - global_position
+			to.y = 0.0
+			if to.length() > 0.7:
+				var want := to.normalized()
+				# steer around obstacles but keep heading to the target
+				_dir = _dir.lerp(want, 1.0 - exp(-6.0 * dt)).normalized()
+				_steer(dt, false)
+				target_speed = script_speed
+				face_dir = _dir
+			elif script_face != null:
+				var f: Vector3 = script_face - global_position
+				f.y = 0.0
+				if f.length() > 0.01:
+					face_dir = f.normalized()
+		elif script_face != null:
+			var f: Vector3 = script_face - global_position
+			f.y = 0.0
+			if f.length() > 0.01:
+				face_dir = f.normalized()
+	else:
+		match state:
+			S.WALK:
+				target_speed = _speed
+				_steer(dt, true)
+				if _timer <= 0.0:
+					if _rng.randf() < 0.45:
+						_start_idle()
+					else:
+						_start_walk()
+				_look_at_player(player, 5.0)
+			S.IDLE:
+				_look_at_player(player, 7.0)
+				if _timer <= 0.0:
 					_start_walk()
-			_look_at_player(player, 5.0)
-		S.IDLE:
-			_look_at_player(player, 7.0)
-			if _timer <= 0.0:
-				_start_walk()
-		S.FLEE:
-			target_speed = 5.2
-			_steer(dt, false)
-			if _timer <= 0.0:
-				_start_walk()
-		S.COWER:
-			body.pose_mode = "cower"
-			face_dir = (_threat - global_position).normalized()
-			if _timer <= 0.0:
-				_start_flee()
-		S.FIGHT:
-			if player == null or player.global_position.distance_to(global_position) > 25.0 or _timer <= 0.0 or player.get("health") <= 0.0:
-				_start_walk()
-			else:
-				var to := player.global_position - global_position
-				to.y = 0.0
-				var d := to.length()
-				face_dir = to / maxf(d, 0.01)
-				_dir = face_dir
-				body.look_point = player.global_position + Vector3.UP * 1.6
-				if d > 1.2:
-					target_speed = 3.6 if d > 4.0 else 1.6
-				elif _attack_cd <= 0.0:
-					if body.play_attack() >= 0:
-						_attack_cd = _rng.randf_range(0.7, 1.3)
-						_hit_done = false
-				if body.is_attacking() and body.attack_hit_moment() and not _hit_done:
-					_hit_done = true
-					if d < 1.6 and player.has_method("take_hit"):
-						player.take_hit(face_dir, 7.0)
-		S.GETUP:
-			if body.knocked <= 0.0 and body._down < 0.15:
-				if health <= 0.0:
-					health = 60.0
-				if personality == 2 and _rng.randf() < 0.6:
-					_start_fight()
-				else:
+			S.FLEE:
+				target_speed = 5.2
+				_steer(dt, false)
+				if _timer <= 0.0:
+					_start_walk()
+			S.COWER:
+				body.pose_mode = "cower"
+				face_dir = (_threat - global_position).normalized()
+				if _timer <= 0.0:
 					_start_flee()
+			S.FIGHT:
+				if player == null or player.global_position.distance_to(global_position) > 25.0 or _timer <= 0.0 or player.get("health") <= 0.0:
+					_start_walk()
+				else:
+					var to := player.global_position - global_position
+					to.y = 0.0
+					var d := to.length()
+					face_dir = to / maxf(d, 0.01)
+					_dir = face_dir
+					body.look_point = player.global_position + Vector3.UP * 1.6
+					if d > 1.2:
+						target_speed = 3.6 if d > 4.0 else 1.6
+					elif _attack_cd <= 0.0:
+						if body.play_attack() >= 0:
+							_attack_cd = _rng.randf_range(0.7, 1.3)
+							_hit_done = false
+					if body.is_attacking() and body.attack_hit_moment() and not _hit_done:
+						_hit_done = true
+						if d < 1.6 and player.has_method("take_hit"):
+							player.take_hit(face_dir, 7.0)
+			S.GETUP:
+				if body.knocked <= 0.0 and body._down < 0.15:
+					if health <= 0.0:
+						health = 60.0
+					if personality == 2 and _rng.randf() < 0.6:
+						_start_fight()
+					else:
+						_start_flee()
 	if body.knocked > 0.0:
 		body.knocked -= dt
 		target_speed = 0.0

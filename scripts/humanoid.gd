@@ -517,7 +517,7 @@ func _process(dt: float) -> void:
 
 	# --- upper-body pose modes ---
 	var pm := pose_mode
-	if pm != "" and (grounded or pm == "carry" or pm == "panic"):
+	if pm != "" and (grounded or pm in ["carry", "panic", "aim_rifle", "aim_pistol", "cuffed"]):
 		match pm:
 			"phone":
 				ra = Vector3(-0.45, 0.0, 0.5)
@@ -555,6 +555,33 @@ func _process(dt: float) -> void:
 				re = -2.25
 				spine_r.x += 0.12
 				hip_y -= 0.04
+			"aim_rifle":
+				ra = Vector3(-1.1, 0.0, 0.35)
+				re = -1.55
+				la = Vector3(-1.35, 0.0, 0.42)
+				le = -0.75
+				chest_r.y += -0.25
+				head_r.y = 0.15
+				spine_r.x += 0.06
+			"aim_pistol":
+				ra = Vector3(-1.5, 0.0, -0.05)
+				re = -0.1
+				la = Vector3(-0.3, 0.0, -0.1)
+				le = -0.3
+			"shoot_air":
+				ra = Vector3(-2.75, 0.0, 0.2)
+				re = -0.15
+				la = Vector3(-0.2, 0.0, -0.25)
+				le = -0.4
+				head_r.x = -0.35
+				spine_r.x -= 0.1
+			"cuffed":
+				la = Vector3(0.5, 0.0, 0.32)
+				ra = Vector3(0.5, 0.0, -0.32)
+				le = -1.6
+				re = -1.6
+				spine_r.x += 0.12
+				head_r.x = 0.25
 			"carry":
 				la = Vector3(-2.85, 0.0, -0.18)
 				ra = Vector3(-2.85, 0.0, 0.18)
